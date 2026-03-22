@@ -1,7 +1,11 @@
 chatgpt
 claude
 cursor
+deepseek
 gemini
+grok
+huggingface
 microsoft_copilot
 midjourney
 perplexity
+poe

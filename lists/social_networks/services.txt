@@ -1,6 +1,7 @@
 facebook
 instagram
 linkedin
+pinterest
 snapchat
 tiktok
 x_twitter

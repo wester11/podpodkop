@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RU Net Blacklist Selector</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #22c55e;
+      --line: #1f2937;
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 20% 10%, #1f2937, #0f172a 40%);
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, sans-serif;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    p { color: var(--muted); margin: 0 0 14px; }
+    .list {
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #0b1220;
+    }
+    .item { display: block; margin: 6px 0; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    button {
+      background: var(--accent);
+      border: 0;
+      color: #052e16;
+      font-weight: 700;
+      padding: 10px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    button.secondary { background: #334155; color: #e5e7eb; }
+    textarea {
+      width: 100%;
+      min-height: 110px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #0b1220;
+      color: #e5e7eb;
+      padding: 10px;
+      resize: vertical;
+      font-family: Consolas, monospace;
+    }
+    .hint { margin-top: 10px; font-size: 13px; color: var(--muted); }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Конструктор ключа Podkop</h1>
+    <p>Выберите нужные агрегированные списки и/или отдельные сервисы. Полученный ключ вставьте в установочный скрипт.</p>
+    <div class="grid">
+      <div class="card">
+        <h2>Групповые списки (lists)</h2>
+        <div id="listsBox" class="list"></div>
+      </div>
+      <div class="card">
+        <h2>Отдельные сервисы (services)</h2>
+        <div id="servicesBox" class="list"></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <h2>Ключ</h2>
+      <textarea id="token" readonly></textarea>
+      <div class="actions">
+        <button id="gen">Сгенерировать ключ</button>
+        <button id="copy" class="secondary">Копировать</button>
+      </div>
+      <div class="hint">
+        Пример запуска: <code>PODKOP_KEY='ВАШ_КЛЮЧ' sh &lt;(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/podkop-fork/install.sh)</code>
+      </div>
+    </div>
+  </div>
+  <script src="./selector.js"></script>
+</body>
+</html>

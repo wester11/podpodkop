@@ -1,32 +1,38 @@
-# Podkop + ваши списки
+# Кастомный Podkop (релизы этого репозитория)
 
-`install.sh` ставит Podkop и сразу подключает списки из:
+`install.sh` устанавливает Podkop-пакеты из релизов `wester11/ru-net-blacklist`.
 
-`https://github.com/wester11/ru-net-blacklist`
-
-## Что уже настроено в скрипте
-
-- Podkop пакеты: `itdoginfo/podkop` (оригинальный репозиторий)
-- Списки: `https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/lists`
-- Конфиг Podkop: `https://raw.githubusercontent.com/itdoginfo/podkop/main/podkop/files/etc/config/podkop`
-
-## Команда установки на роутере
+## Установка одной командой
 
 ```sh
 sh <(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/podkop-fork/install.sh)
 ```
 
-## Что скрипт добавляет в Podkop
+Также доступен короткий wrapper:
 
-В `podkop.main` автоматически добавляются remote-списки:
+```sh
+sh <(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/install.sh)
+```
 
-- `lists/all_services`
-- `lists/social_messaging`
-- `lists/ai_all`
+После установки обновите страницу LuCI с очисткой кэша браузера (Ctrl+F5).
 
-## Благодарность
+## Что включено
 
-Скрипт выводит:
+- Стандартные community-списки Podkop
+- Ваши секции из `lists/`:
+  - `ai_all`
+  - `gaming`
+  - `social_networks`
+  - `messengers_calls`
+  - `video_audio_streaming`
+  - `news_media`
+  - `developer_platforms`
+  - `cloud_storage`
 
-- `Thanks to the original Podkop author and project: https://github.com/itdoginfo/podkop`
-- `Спасибо создателю Podkop: https://github.com/itdoginfo/podkop`
+## Как выпускать новую версию пакетов
+
+1. Обновите код в `main`.
+2. Создайте tag формата `podkop-vX.Y.Z` (например, `podkop-v0.7.1-ru1`).
+3. Запушьте tag в GitHub.
+
+Workflow `.github/workflows/release-custom-podkop.yml` соберет `ipk/apk` и создаст релиз автоматически.

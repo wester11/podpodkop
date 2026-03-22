@@ -1,41 +1,63 @@
-# Lists Proxy
+# RU Net Blacklist
 
-Списки доменов и подсетей (`.srs`) для прокси и маршрутизации.
+Списки доменов/подсетей и кастомный Podkop для OpenWrt.
 
-## Структура проекта
+## Что это
 
-- `services/` - все одиночные сервисы (каждый сервис в своей папке)
-- `lists/` - агрегированные списки, где объединено сразу несколько сервисов
-- `scripts/` - служебные скрипты
+Проект дает:
 
-Каждая папка сервиса и списка содержит:
+- базу сервисов `services/`
+- готовые секции `lists/`
+- кастомный Podkop с community-списками:
+  - стандартные списки Podkop
+  - ваши секции из `lists/`
+- установку на роутер одной командой
 
-- `domains.srs` - домены
-- `subnets.srs` - IPv4/IPv6 CIDR
-- `services.txt` - только для агрегированных списков в `lists/`
+## Установка одной командой
 
-## Папка `services/`
+```sh
+sh <(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/install.sh)
+```
 
-В `services/` лежат отдельные сервисы, например:
-`telegram`, `facebook`, `whatsapp`, `tiktok`, `youtube`, `chatgpt`, `claude`, `cursor` и другие.
+или напрямую:
 
-## Папка `lists/` (готовые наборы)
+```sh
+sh <(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/podkop-fork/install.sh)
+```
 
-- `ai_all`
-  - входит: `chatgpt`, `claude`, `cursor`, `gemini`, `perplexity`, `midjourney`, `microsoft_copilot`
-- `social_networks`
-  - входит: `facebook`, `instagram`, `x_twitter`, `linkedin`, `tiktok`, `snapchat`
-- `messengers_calls`
-  - входит: `telegram`, `whatsapp`, `signal`, `viber`, `discord`, `protonmail`, `facetime`
-- `social_messaging`
-  - входит: `telegram`, `whatsapp`, `facebook`, `instagram`, `x_twitter`, `linkedin`, `tiktok`, `snapchat`, `discord`, `signal`, `viber`
-- `video_audio_streaming`
-  - входит: `youtube`, `twitch`, `spotify`, `dailymotion`, `soundcloud`
-- `news_media`
-  - входит: `bbc`, `cnn`, `associated_press`, `wsj`, `radio_svoboda`, `euronews`, `meduza`, `dw`, `google_news`
-- `creator_platforms`
-  - входит: `patreon`, `envato`, `canva`, `metacritic`, `soundcloud`
-- `gaming`
-  - входит: `roblox`, `metacritic`
-- `all_services`
-  - входит: все сервисы из папки `services/`
+## Community-секции (наши)
+
+- `ai_all` — AI инструменты
+- `gaming` — Игры
+- `social_networks` — Социальные сети
+- `messengers_calls` — Мессенджеры и звонки
+- `video_audio_streaming` — Видео и стриминг
+- `news_media` — Новости и медиа
+- `developer_platforms` — Платформы для разработчиков
+- `cloud_storage` — Облачные хранилища
+
+## Как выпускается наш Podkop
+
+При push тега `podkop-v*` запускается GitHub Actions:
+
+- `.github/workflows/release-custom-podkop.yml`
+
+Он:
+
+1. Собирает `podkop` и `luci-app-podkop` (`ipk` и `apk`) из `_podkop_upstream/`
+2. Публикует артефакты в GitHub Release
+
+## Где что лежит
+
+- `_podkop_upstream/` — исходники кастомного Podkop
+- `podkop-fork/` — установщик и инструкция
+- `lists/` — агрегированные списки
+- `services/` — отдельные сервисы
+- `selector/` — генератор ключа выбора списков
+- `wiki/` — документация
+
+## Благодарность
+
+Спасибо автору Podkop:
+
+- https://github.com/itdoginfo/podkop
