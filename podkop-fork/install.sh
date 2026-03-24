@@ -21,7 +21,7 @@ PODKOP_CONFIG_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/m
 PODKOP_SECTION_JS_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/section.js"
 PODKOP_SUBSCRIBE_JS_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/subscribe.js"
 
-REPO_API="https://api.github.com/repos/${PODKOP_FORK_REPO}/releases/latest"
+PODKOP_RELEASE_TAG="${PODKOP_RELEASE_TAG:-}"
 DOWNLOAD_DIR="/tmp/podkop-fork"
 COUNT=3
 PODKOP_KEY="${PODKOP_KEY:-}"
@@ -425,9 +425,20 @@ main() {
                 shift
                 PODKOP_KEY="${1:-}"
                 ;;
+            --release)
+                shift
+                PODKOP_RELEASE_TAG="${1:-}"
+                ;;
         esac
         shift || true
     done
+
+    if [ -n "$PODKOP_RELEASE_TAG" ]; then
+        REPO_API="https://api.github.com/repos/${PODKOP_FORK_REPO}/releases/tags/${PODKOP_RELEASE_TAG}"
+        msg "Using pinned release: ${PODKOP_RELEASE_TAG}"
+    else
+        REPO_API="https://api.github.com/repos/${PODKOP_FORK_REPO}/releases/latest"
+    fi
 
     check_system
     sing_box
