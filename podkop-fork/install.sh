@@ -18,6 +18,8 @@ LISTS_BASE_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main
 SERVICES_BASE_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/services"
 # Podkop custom config source (from custom podkop fork sources in this repository):
 PODKOP_CONFIG_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/podkop/files/etc/config/podkop"
+PODKOP_SECTION_JS_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/section.js"
+PODKOP_SUBSCRIBE_JS_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/subscribe.js"
 
 REPO_API="https://api.github.com/repos/${PODKOP_FORK_REPO}/releases/latest"
 DOWNLOAD_DIR="/tmp/podkop-fork"
@@ -53,10 +55,27 @@ add_remote_pair() {
     uci -q add_list podkop.main.remote_subnet_lists="$subnet_url"
 }
 
+add_community_item() {
+    item="$1"
+    uci -q add_list podkop.main.community_lists="$item"
+}
+
+is_custom_community_item() {
+    case "$1" in
+        ai_all|gaming|social_networks|messengers_calls|video_audio_streaming|news_media|developer_platforms|cloud_storage)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 apply_default_lists() {
-    add_remote_pair "${LISTS_BASE_URL}/all_services/domains.srs" "${LISTS_BASE_URL}/all_services/subnets.srs"
-    add_remote_pair "${LISTS_BASE_URL}/social_messaging/domains.srs" "${LISTS_BASE_URL}/social_messaging/subnets.srs"
-    add_remote_pair "${LISTS_BASE_URL}/ai_all/domains.srs" "${LISTS_BASE_URL}/ai_all/subnets.srs"
+    add_community_item "social_networks"
+    add_community_item "messengers_calls"
+    add_community_item "video_audio_streaming"
+    add_community_item "ai_all"
 }
 
 apply_selected_lists_from_key() {
@@ -76,7 +95,11 @@ apply_selected_lists_from_key() {
     for item in $lists_csv; do
         [ -n "$item" ] || continue
         if echo "$item" | grep -Eq '^[a-z0-9_]+$'; then
-            add_remote_pair "${LISTS_BASE_URL}/${item}/domains.srs" "${LISTS_BASE_URL}/${item}/subnets.srs"
+            if is_custom_community_item "$item"; then
+                add_community_item "$item"
+            else
+                add_remote_pair "${LISTS_BASE_URL}/${item}/domains.srs" "${LISTS_BASE_URL}/${item}/subnets.srs"
+            fi
             selected_count=$((selected_count + 1))
         fi
     done
@@ -325,6 +348,28 @@ refresh_luci_cache() {
     /etc/init.d/uhttpd restart || true
 }
 
+apply_subscribe_ui_patch() {
+    local view_dir section_js subscribe_js
+    view_dir="/www/luci-static/resources/view/podkop"
+    section_js="$view_dir/section.js"
+    subscribe_js="$view_dir/subscribe.js"
+
+    mkdir -p "$view_dir"
+
+    msg "Applying Subscribe UI patch..."
+    if wget -q -O "$subscribe_js" "$PODKOP_SUBSCRIBE_JS_URL"; then
+        chmod 0644 "$subscribe_js" || true
+    else
+        warn "Failed to download subscribe.js"
+    fi
+
+    if wget -q -O "$section_js" "$PODKOP_SECTION_JS_URL"; then
+        chmod 0644 "$section_js" || true
+    else
+        warn "Failed to download patched section.js"
+    fi
+}
+
 reset_old_config_if_needed() {
     if [ -f /etc/config/podkop ] && [ ! -f /etc/config/podkop-fork-backup ]; then
         cp /etc/config/podkop /etc/config/podkop-fork-backup || true
@@ -349,6 +394,7 @@ apply_custom_lists() {
     # Clean previous remote lists in main, then add yours.
     uci -q delete podkop.main.remote_domain_lists || true
     uci -q delete podkop.main.remote_subnet_lists || true
+    uci -q delete podkop.main.community_lists || true
 
     if [ -n "$PODKOP_KEY" ]; then
         apply_selected_lists_from_key
@@ -389,6 +435,7 @@ main() {
     pkg_list_update || { err "Package list update failed"; exit 1; }
     download_release_packages
     install_packages
+    apply_subscribe_ui_patch
     refresh_luci_cache
     reset_old_config_if_needed
     apply_custom_lists

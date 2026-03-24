@@ -1132,6 +1132,14 @@ configure_remote_domain_or_subnet_list_handler() {
     log "Detected file extension: '$file_extension'" "debug"
     case "$file_extension" in
     json | srs)
+        # Our repository stores plain-text lists with ".srs" extension.
+        # Treat them as source lists instead of binary sing-box rule-sets.
+        if echo "$url" | grep -q "raw.githubusercontent.com/wester11/ru-net-blacklist/"; then
+            log "Detected plain-text custom list in .srs format, import as source $type list"
+            prepare_source_ruleset "$section" "remote" "$type" "$route_rule_tag"
+            return 0
+        fi
+
         log "Creating a remote $type ruleset from the source URL" "info"
         local basename ruleset_tag format detour update_interval
         basename=$(url_get_basename "$url")
