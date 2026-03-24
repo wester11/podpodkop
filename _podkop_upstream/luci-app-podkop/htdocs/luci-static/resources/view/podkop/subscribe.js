@@ -845,6 +845,14 @@ function fetchConfigs(subscribeUrl, subscribeContainer, listId, section_id, isUr
           }
 
           var configs = result.configs;
+          // Selector mode: auto-replace selector_proxy_links with all fetched configs.
+          if (isSelector && section_id) {
+            var selectorUrls = configs
+              .map(function(cfg) { return cfg && cfg.url ? cfg.url : ""; })
+              .filter(function(url) { return !!url; });
+            updateSelectorProxyLinks(section_id, selectorUrls);
+          }
+
           if (!subscribeContainer) return;
 
           var configListContainer = createConfigListUI(

@@ -7,7 +7,7 @@ set -eu
 # Podkop fork installer
 # ==============================
 # 1) Install podkop/luci-app-podkop from YOUR fork releases
-# 2) Attach YOUR remote lists to podkop main section
+# 2) Optional: attach YOUR lists from key
 # 3) Keep attribution to original podkop author
 
 # ---- Ready-to-use values ----
@@ -71,18 +71,10 @@ is_custom_community_item() {
     esac
 }
 
-apply_default_lists() {
-    add_community_item "social_networks"
-    add_community_item "messengers_calls"
-    add_community_item "video_audio_streaming"
-    add_community_item "ai_all"
-}
-
 apply_selected_lists_from_key() {
     payload="$(decode_key_payload "$PODKOP_KEY")"
     if [ -z "$payload" ]; then
-        warn "Key decode failed, fallback to default lists."
-        apply_default_lists
+        warn "Key decode failed, skip custom lists."
         return
     fi
 
@@ -112,11 +104,10 @@ apply_selected_lists_from_key() {
     done
     IFS="$OLD_IFS"
 
-    if [ "$selected_count" -eq 0 ]; then
-        warn "No valid items in key, fallback to default lists."
-        apply_default_lists
-    else
+    if [ "$selected_count" -gt 0 ]; then
         msg "Applied selected items from key: $selected_count"
+    else
+        warn "No valid items in key, no lists were applied."
     fi
 }
 
@@ -399,11 +390,30 @@ apply_custom_lists() {
     if [ -n "$PODKOP_KEY" ]; then
         apply_selected_lists_from_key
     else
-        apply_default_lists
+        msg "No key provided: skip auto-adding lists."
     fi
 
     uci commit podkop
-    msg "Custom remote lists applied to podkop.main"
+    msg "List setup step completed."
+}
+
+set_selector_default_mode() {
+    if ! command -v uci >/dev/null 2>&1; then
+        warn "uci not found, skip selector default mode setup."
+        return
+    fi
+
+    if ! uci -q show podkop.main >/dev/null 2>&1; then
+        warn "podkop.main section not found, skip selector default mode setup."
+        return
+    fi
+
+    uci -q set podkop.main.connection_type='proxy'
+    uci -q set podkop.main.proxy_config_type='selector'
+    uci -q delete podkop.main.proxy_string || true
+    uci -q delete podkop.main.urltest_proxy_links || true
+    uci commit podkop
+    msg "Default main mode set: Configuration Type = Selector"
 }
 
 cleanup() {
@@ -450,6 +460,7 @@ main() {
     refresh_luci_cache
     reset_old_config_if_needed
     apply_custom_lists
+    set_selector_default_mode
     cleanup
     print_finish
 }
