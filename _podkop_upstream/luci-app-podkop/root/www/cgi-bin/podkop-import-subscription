@@ -1,0 +1,173 @@
+#!/bin/sh
+# One-tap subscription import for mobile users in LAN
+
+echo "Content-Type: text/html; charset=utf-8"
+echo ""
+
+html_escape() {
+    echo "$1" | sed \
+        -e 's/&/\&amp;/g' \
+        -e 's/</\&lt;/g' \
+        -e 's/>/\&gt;/g' \
+        -e 's/"/\&quot;/g' \
+        -e "s/'/\&#39;/g"
+}
+
+urldecode() {
+    local value="$1"
+    printf '%b' "$(echo "$value" | sed 's/+/ /g;s/%/\\x/g')" 2>/dev/null
+}
+
+query_param_raw() {
+    local key="$1"
+    echo "$QUERY_STRING" | tr '&' '\n' | sed -n "s/^${key}=//p" | head -n 1
+}
+
+render_page() {
+    local title="$1"
+    local body="$2"
+    cat <<EOF
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Podkop Import</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; background: #0b0f14; color: #e8eef6; }
+    .wrap { max-width: 680px; margin: 24px auto; padding: 0 16px; }
+    .card { background: #121922; border: 1px solid #203043; border-radius: 14px; padding: 18px; }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    p { margin: 8px 0; line-height: 1.5; color: #b9c7d8; }
+    .ok { color: #5ee38a; font-weight: 700; }
+    .err { color: #ff7b7b; font-weight: 700; }
+    code { background: #0f1520; border: 1px solid #203043; border-radius: 8px; padding: 2px 6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>$(html_escape "$title")</h1>
+      $body
+    </div>
+  </div>
+</body>
+</html>
+EOF
+}
+
+render_error() {
+    local text="$1"
+    render_page "Ошибка импорта" "<p class=\"err\">$(html_escape "$text")</p>"
+    exit 0
+}
+
+if [ -z "$QUERY_STRING" ]; then
+    render_error "Пустой запрос."
+fi
+
+subscription_url="$(urldecode "$(query_param_raw "url")")"
+provided_key="$(urldecode "$(query_param_raw "key")")"
+apply_mode="$(urldecode "$(query_param_raw "mode")")"
+[ -z "$apply_mode" ] && apply_mode="selector"
+
+if [ -z "$subscription_url" ]; then
+    render_error "Не передан параметр url."
+fi
+
+case "$subscription_url" in
+    http://*|https://*) ;;
+    *) render_error "url должен начинаться с http:// или https://." ;;
+esac
+
+stored_key="$(uci -q get podkop.settings.mobile_import_key 2>/dev/null || true)"
+if [ -z "$stored_key" ]; then
+    render_error "Ключ импорта не настроен на роутере."
+fi
+
+if [ -z "$provided_key" ] || [ "$provided_key" != "$stored_key" ]; then
+    render_error "Неверный ключ импорта."
+fi
+
+if [ ! -x /www/cgi-bin/podkop-subscribe ]; then
+    render_error "Сервис импорта подписки не найден."
+fi
+
+subscribe_raw="$(printf '%s\n' "$subscription_url" | /www/cgi-bin/podkop-subscribe 2>/dev/null)"
+subscribe_json="$(echo "$subscribe_raw" | sed '1,/^$/d')"
+
+if [ -z "$subscribe_json" ]; then
+    render_error "Пустой ответ от сервиса подписки."
+fi
+
+if command -v jq >/dev/null 2>&1; then
+    subscribe_error="$(echo "$subscribe_json" | jq -r '.error // empty' 2>/dev/null || true)"
+    if [ -n "$subscribe_error" ]; then
+        render_error "$subscribe_error"
+    fi
+    provider_id="$(echo "$subscribe_json" | jq -r '.provider_id // empty' 2>/dev/null || true)"
+    urls="$(echo "$subscribe_json" | jq -r '.configs[]?.url // empty' 2>/dev/null || true)"
+else
+    render_error "Не найден jq на роутере."
+fi
+
+if [ -z "$urls" ]; then
+    render_error "Не найдено конфигураций в подписке."
+fi
+
+# Apply settings to main section
+uci -q set podkop.main.connection_type='proxy'
+case "$apply_mode" in
+    selector)
+        uci -q set podkop.main.proxy_config_type='selector'
+        uci -q delete podkop.main.selector_proxy_links || true
+        uci -q delete podkop.main.urltest_proxy_links || true
+        uci -q delete podkop.main.proxy_string || true
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            uci -q add_list podkop.main.selector_proxy_links="$line"
+        done <<EOF
+$urls
+EOF
+        ;;
+    urltest)
+        uci -q set podkop.main.proxy_config_type='urltest'
+        uci -q delete podkop.main.selector_proxy_links || true
+        uci -q delete podkop.main.urltest_proxy_links || true
+        uci -q delete podkop.main.proxy_string || true
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            uci -q add_list podkop.main.urltest_proxy_links="$line"
+        done <<EOF
+$urls
+EOF
+        ;;
+    url)
+        uci -q set podkop.main.proxy_config_type='url'
+        uci -q delete podkop.main.selector_proxy_links || true
+        uci -q delete podkop.main.urltest_proxy_links || true
+        first_url="$(echo "$urls" | head -n1)"
+        uci -q set podkop.main.proxy_string="$first_url"
+        ;;
+    *)
+        render_error "Неверный mode. Допустимо: selector, urltest, url."
+        ;;
+esac
+
+uci -q set podkop.main.subscribe_url="$subscription_url"
+uci commit podkop
+
+/etc/init.d/podkop restart >/dev/null 2>&1 || true
+
+count="$(echo "$urls" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+provider_html=""
+if [ -n "$provider_id" ]; then
+    provider_html="<p><b>Provider ID:</b> <code>$(html_escape "$provider_id")</code></p>"
+fi
+
+render_page "Подписка импортирована" \
+"<p class=\"ok\">Готово. Конфигурации применены в режиме <code>$(html_escape "$apply_mode")</code>.</p>
+<p><b>Количество конфигов:</b> <code>$(html_escape "$count")</code></p>
+$provider_html
+<p>Можно закрыть страницу и открыть LuCI для проверки.</p>"
+

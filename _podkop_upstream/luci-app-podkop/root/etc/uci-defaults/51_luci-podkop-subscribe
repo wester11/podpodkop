@@ -4,5 +4,8 @@ if [ -f /www/cgi-bin/podkop-subscribe ]; then
     chmod 0755 /www/cgi-bin/podkop-subscribe 2>/dev/null || true
 fi
 
-exit 0
+if [ -f /www/cgi-bin/podkop-import-subscription ]; then
+    chmod 0755 /www/cgi-bin/podkop-import-subscription 2>/dev/null || true
+fi
 
+exit 0

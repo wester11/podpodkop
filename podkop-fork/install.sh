@@ -21,6 +21,7 @@ PODKOP_CONFIG_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/m
 PODKOP_SECTION_JS_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/section.js"
 PODKOP_SUBSCRIBE_JS_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/subscribe.js"
 PODKOP_SUBSCRIBE_CGI_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-subscribe"
+PODKOP_IMPORT_CGI_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-import-subscription"
 
 PODKOP_RELEASE_TAG="${PODKOP_RELEASE_TAG:-}"
 DOWNLOAD_DIR="/tmp/podkop-fork"
@@ -341,12 +342,13 @@ refresh_luci_cache() {
 }
 
 apply_subscribe_ui_patch() {
-    local view_dir section_js subscribe_js cgi_dir cgi_file
+    local view_dir section_js subscribe_js cgi_dir cgi_file import_cgi_file
     view_dir="/www/luci-static/resources/view/podkop"
     section_js="$view_dir/section.js"
     subscribe_js="$view_dir/subscribe.js"
     cgi_dir="/www/cgi-bin"
     cgi_file="$cgi_dir/podkop-subscribe"
+    import_cgi_file="$cgi_dir/podkop-import-subscription"
 
     mkdir -p "$view_dir"
     mkdir -p "$cgi_dir"
@@ -368,6 +370,12 @@ apply_subscribe_ui_patch() {
         chmod 0755 "$cgi_file" || true
     else
         warn "Failed to download podkop-subscribe CGI endpoint"
+    fi
+
+    if wget -q -O "$import_cgi_file" "$PODKOP_IMPORT_CGI_URL"; then
+        chmod 0755 "$import_cgi_file" || true
+    else
+        warn "Failed to download podkop-import-subscription CGI endpoint"
     fi
 }
 
@@ -426,6 +434,39 @@ set_selector_default_mode() {
     msg "Default main mode set: Configuration Type = Selector"
 }
 
+setup_mobile_import() {
+    local import_key lan_ip seed
+
+    if ! command -v uci >/dev/null 2>&1; then
+        warn "uci not found, skip mobile import setup."
+        return
+    fi
+
+    import_key="$(uci -q get podkop.settings.mobile_import_key 2>/dev/null || true)"
+    if [ -z "$import_key" ]; then
+        seed="$(cat /etc/machine-id 2>/dev/null || true)"
+        [ -z "$seed" ] && seed="$(cat /tmp/sysinfo/board_name 2>/dev/null || true)"
+        [ -z "$seed" ] && seed="$(cat /sys/class/net/br-lan/address 2>/dev/null || true)"
+        [ -z "$seed" ] && seed="$(date +%s)"
+
+        if command -v md5sum >/dev/null 2>&1; then
+            import_key="$(echo "${seed}-$(date +%s)" | md5sum | awk '{print $1}')"
+        else
+            import_key="$(echo "${seed}$(date +%s)" | tr -cd '[:alnum:]' | cut -c1-32)"
+        fi
+
+        uci -q set podkop.settings.mobile_import_key="$import_key"
+        uci commit podkop
+    fi
+
+    lan_ip="$(uci -q get network.lan.ipaddr 2>/dev/null || true)"
+    [ -z "$lan_ip" ] && lan_ip="192.168.1.1"
+
+    msg "Mobile import key: $import_key"
+    msg "Button URL template:"
+    msg "http://${lan_ip}/cgi-bin/podkop-import-subscription?key=${import_key}&mode=selector&url=<URL_ENCODED_SUBSCRIPTION>"
+}
+
 cleanup() {
     find "$DOWNLOAD_DIR" -type f -name '*podkop*' -exec rm {} \; 2>/dev/null || true
 }
@@ -471,6 +512,7 @@ main() {
     reset_old_config_if_needed
     apply_custom_lists
     set_selector_default_mode
+    setup_mobile_import
     cleanup
     print_finish
 }

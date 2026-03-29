@@ -22,6 +22,7 @@
   - авто-`user-agent`
   - отображение `x-provider-id` из ответа (если сервер его возвращает)
 - В `Selector` и `URLTest` конфиги из подписки автоматически заменяют старый набор.
+- One-tap импорт подписки с телефона через кнопку (локальная ссылка на роутер).
 
 ## LuCI (упрощено)
 
@@ -54,6 +55,27 @@ sh <(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/
 ```sh
 sh <(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/podkop-fork/install.sh) --key "PK1_ВАШ_КЛЮЧ"
 ```
+
+## Импорт подписки кнопкой (телефон -> роутер)
+
+После установки скрипт выводит:
+
+- `Mobile import key`
+- готовый шаблон URL для кнопки
+
+Формат ссылки для кнопки в подписке:
+
+```text
+http://ROUTER_IP/cgi-bin/podkop-import-subscription?key=YOUR_KEY&mode=selector&url=URL_ENCODED_SUBSCRIPTION
+```
+
+Где:
+
+- `mode=selector` — импорт в `Selector`
+- `mode=urltest` — импорт в `URLTest`
+- `mode=url` — импорт первой конфигурации в `Connection URL`
+
+Это позволяет пользователю нажать кнопку на телефоне в локальной сети роутера и автоматически применить подписку в Podkop.
 
 ## Структура репозитория
 
