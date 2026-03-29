@@ -189,11 +189,26 @@ _add_outbound_security() {
     tls | reality)
         local sni insecure alpn fingerprint public_key short_id
         sni=$(url_get_query_param "$url" "sni")
+        [ -z "$sni" ] && sni="$(url_get_host "$url")"
         insecure=$(_get_insecure_query_param_from_url "$url")
         alpn=$(comma_string_to_json_array "$(url_get_query_param "$url" "alpn")")
         fingerprint=$(url_get_query_param "$url" "fp")
+        [ -z "$fingerprint" ] && fingerprint=$(url_get_query_param "$url" "client-fingerprint")
+        [ -z "$fingerprint" ] && fingerprint=$(url_get_query_param "$url" "fingerprint")
         public_key=$(url_get_query_param "$url" "pbk")
+        [ -z "$public_key" ] && public_key=$(url_get_query_param "$url" "public_key")
         short_id=$(url_get_query_param "$url" "sid")
+        [ -z "$short_id" ] && short_id=$(url_get_query_param "$url" "short_id")
+
+        if [ "$security" = "reality" ]; then
+            # sing-box reality client requires uTLS.
+            [ -z "$fingerprint" ] && fingerprint="chrome"
+
+            if [ -z "$public_key" ]; then
+                log "Reality outbound is missing public key (pbk/public_key). Aborted." "fatal"
+                exit 1
+            fi
+        fi
 
         config=$(
             sing_box_cm_set_tls_for_outbound \
