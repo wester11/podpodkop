@@ -7,8 +7,84 @@
 echo "Content-Type: application/json"
 echo ""
 
-# Read POST data
-read -r url
+trim() {
+    echo "$1" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+generate_auto_hwid() {
+    local hwid seed
+
+    if [ -f /etc/machine-id ]; then
+        hwid="$(trim "$(cat /etc/machine-id 2>/dev/null)")"
+        if [ -n "$hwid" ]; then
+            echo "$hwid"
+            return 0
+        fi
+    fi
+
+    seed="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+    if [ -z "$seed" ]; then
+        seed="$(cat /tmp/sysinfo/model 2>/dev/null)"
+    fi
+    seed="${seed}-$(cat /sys/class/net/br-lan/address 2>/dev/null)"
+    if [ -z "$seed" ]; then
+        seed="$(hostname 2>/dev/null)"
+    fi
+
+    if command -v md5sum >/dev/null 2>&1; then
+        echo "$seed" | md5sum | awk '{print $1}'
+    else
+        echo "$seed" | tr -cd '[:alnum:]'
+    fi
+}
+
+json_get_string_fallback() {
+    local key="$1"
+    local payload="$2"
+    echo "$payload" | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n1
+}
+
+payload="$(cat)"
+payload="$(trim "$payload")"
+
+url=""
+hwid=""
+device_os=""
+ver_os=""
+device_model=""
+user_agent=""
+
+if [ -n "$payload" ]; then
+    case "$payload" in
+        \{*)
+            if command -v jq >/dev/null 2>&1; then
+                url="$(echo "$payload" | jq -r '.url // empty' 2>/dev/null || true)"
+                hwid="$(echo "$payload" | jq -r '.hwid // empty' 2>/dev/null || true)"
+                device_os="$(echo "$payload" | jq -r '.device_os // empty' 2>/dev/null || true)"
+                ver_os="$(echo "$payload" | jq -r '.ver_os // empty' 2>/dev/null || true)"
+                device_model="$(echo "$payload" | jq -r '.device_model // empty' 2>/dev/null || true)"
+                user_agent="$(echo "$payload" | jq -r '.user_agent // empty' 2>/dev/null || true)"
+            else
+                url="$(json_get_string_fallback "url" "$payload")"
+                hwid="$(json_get_string_fallback "hwid" "$payload")"
+                device_os="$(json_get_string_fallback "device_os" "$payload")"
+                ver_os="$(json_get_string_fallback "ver_os" "$payload")"
+                device_model="$(json_get_string_fallback "device_model" "$payload")"
+                user_agent="$(json_get_string_fallback "user_agent" "$payload")"
+            fi
+            ;;
+        *)
+            url="$payload"
+            ;;
+    esac
+fi
+
+url="$(trim "$url")"
+hwid="$(trim "$hwid")"
+device_os="$(trim "$device_os")"
+ver_os="$(trim "$ver_os")"
+device_model="$(trim "$device_model")"
+user_agent="$(trim "$user_agent")"
 
 if [ -z "$url" ]; then
     json_init
@@ -17,19 +93,50 @@ if [ -z "$url" ]; then
     exit 1
 fi
 
-# Fetch and decode subscribe
+if [ -z "$hwid" ]; then
+    hwid="$(generate_auto_hwid)"
+fi
+
+if [ -z "$user_agent" ]; then
+    user_agent="v2rayNG"
+fi
+
 tmpfile="/tmp/podkop_subscribe_$$"
 decoded_file="/tmp/podkop_subscribe_decoded_$$"
+headers_file="/tmp/podkop_subscribe_headers_$$"
 
-# Cleanup function
 cleanup() {
-    rm -f "$tmpfile" "$decoded_file"
+    rm -f "$tmpfile" "$decoded_file" "$headers_file"
 }
 trap cleanup EXIT
 
-# Fetch the subscribe URL
-# Use 'v2rayNG' User-Agent to get base64 encoded protocol links
-if ! wget -q -O "$tmpfile" --timeout=30 --user-agent="v2rayNG" "$url" 2>/dev/null; then
+fetch_ok=0
+if command -v curl >/dev/null 2>&1; then
+    if curl -fsSL --max-time 30 \
+        -A "$user_agent" \
+        -H "x-hwid: $hwid" \
+        -H "x-device-os: $device_os" \
+        -H "x-ver-os: $ver_os" \
+        -H "x-device-model: $device_model" \
+        -D "$headers_file" \
+        -o "$tmpfile" \
+        "$url" >/dev/null 2>&1; then
+        fetch_ok=1
+    fi
+else
+    # BusyBox/OpenWrt wget fallback
+    if wget -q -O "$tmpfile" --timeout=30 \
+        --user-agent="$user_agent" \
+        --header="x-hwid: $hwid" \
+        --header="x-device-os: $device_os" \
+        --header="x-ver-os: $ver_os" \
+        --header="x-device-model: $device_model" \
+        "$url" 2>/dev/null; then
+        fetch_ok=1
+    fi
+fi
+
+if [ "$fetch_ok" -ne 1 ]; then
     json_init
     json_add_string "error" "Failed to fetch URL"
     json_dump
@@ -56,6 +163,14 @@ url_decode() {
 
 # Parse all supported protocols
 json_init
+json_add_string "hwid" "$hwid"
+
+provider_id="$(grep -i '^x-provider-id:' "$headers_file" 2>/dev/null | tail -n1 | cut -d':' -f2-)"
+provider_id="$(trim "$provider_id")"
+if [ -n "$provider_id" ]; then
+    json_add_string "provider_id" "$provider_id"
+fi
+
 json_add_array "configs"
 
 index=1

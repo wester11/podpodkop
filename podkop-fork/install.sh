@@ -20,6 +20,7 @@ SERVICES_BASE_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/m
 PODKOP_CONFIG_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/podkop/files/etc/config/podkop"
 PODKOP_SECTION_JS_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/section.js"
 PODKOP_SUBSCRIBE_JS_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/subscribe.js"
+PODKOP_SUBSCRIBE_CGI_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-subscribe"
 
 PODKOP_RELEASE_TAG="${PODKOP_RELEASE_TAG:-}"
 DOWNLOAD_DIR="/tmp/podkop-fork"
@@ -340,12 +341,15 @@ refresh_luci_cache() {
 }
 
 apply_subscribe_ui_patch() {
-    local view_dir section_js subscribe_js
+    local view_dir section_js subscribe_js cgi_dir cgi_file
     view_dir="/www/luci-static/resources/view/podkop"
     section_js="$view_dir/section.js"
     subscribe_js="$view_dir/subscribe.js"
+    cgi_dir="/www/cgi-bin"
+    cgi_file="$cgi_dir/podkop-subscribe"
 
     mkdir -p "$view_dir"
+    mkdir -p "$cgi_dir"
 
     msg "Applying Subscribe UI patch..."
     if wget -q -O "$subscribe_js" "$PODKOP_SUBSCRIBE_JS_URL"; then
@@ -358,6 +362,12 @@ apply_subscribe_ui_patch() {
         chmod 0644 "$section_js" || true
     else
         warn "Failed to download patched section.js"
+    fi
+
+    if wget -q -O "$cgi_file" "$PODKOP_SUBSCRIBE_CGI_URL"; then
+        chmod 0755 "$cgi_file" || true
+    else
+        warn "Failed to download podkop-subscribe CGI endpoint"
     fi
 }
 

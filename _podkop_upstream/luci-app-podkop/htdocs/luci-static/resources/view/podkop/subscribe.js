@@ -229,7 +229,8 @@ function refetchConfigsForSection(select) {
       ? "podkop-subscribe-config-list-urltest-" + section_id
       : (isSelector ? "podkop-subscribe-config-list-selector-" + section_id : "podkop-subscribe-config-list-" + section_id);
 
-    fetchConfigs(subscribeUrl, subscribeContainer, listId, false, section_id, isUrltest, isSelector);
+    var subscribePayload = buildSubscribePayload(section_id, subscribeUrl);
+    fetchConfigs(subscribePayload, subscribeContainer, listId, section_id, isUrltest, isSelector);
   }
 }
 
@@ -337,6 +338,25 @@ function getSubscribeUrl(ev, section_id, fieldName) {
     return input.value;
   }
   return "";
+}
+
+function getSectionOptionValue(section_id, fieldName) {
+  var input = findSubscribeInput(null, section_id, fieldName);
+  if (input && input.value) {
+    return input.value;
+  }
+  return "";
+}
+
+function buildSubscribePayload(section_id, subscribeUrl) {
+  return JSON.stringify({
+    url: subscribeUrl,
+    hwid: getSectionOptionValue(section_id, "subscribe_hwid"),
+    device_os: getSectionOptionValue(section_id, "subscribe_device_os"),
+    ver_os: getSectionOptionValue(section_id, "subscribe_ver_os"),
+    device_model: getSectionOptionValue(section_id, "subscribe_device_model"),
+    user_agent: getSectionOptionValue(section_id, "subscribe_user_agent")
+  });
 }
 
 // Check if should show config list
@@ -790,7 +810,7 @@ function updateDynamicList(section_id, baseId, selectedUrls, fieldName) {
 }
 
 // Fetch configs handler
-function fetchConfigs(subscribeUrl, subscribeContainer, listId, section_id, isUrltest, isSelector) {
+function fetchConfigs(subscribePayload, subscribeContainer, listId, section_id, isUrltest, isSelector) {
   // Remove old list for this section
   var existingList = document.getElementById(listId);
   if (existingList && existingList.parentNode) {
@@ -822,7 +842,7 @@ function fetchConfigs(subscribeUrl, subscribeContainer, listId, section_id, isUr
 
   var xhr = new XMLHttpRequest();
   xhr.open("POST", "/cgi-bin/podkop-subscribe", true);
-  xhr.setRequestHeader("Content-Type", "text/plain");
+  xhr.setRequestHeader("Content-Type", "application/json");
 
   xhr.onreadystatechange = function () {
     if (xhr.readyState === 4) {
@@ -851,6 +871,20 @@ function fetchConfigs(subscribeUrl, subscribeContainer, listId, section_id, isUr
               .map(function(cfg) { return cfg && cfg.url ? cfg.url : ""; })
               .filter(function(url) { return !!url; });
             updateSelectorProxyLinks(section_id, selectorUrls);
+          }
+
+          if (result.provider_id && subscribeContainer) {
+            var providerInfo = createSuccessMessage(_("Provider ID: ") + result.provider_id);
+            if (subscribeContainer.nextSibling) {
+              subscribeContainer.parentNode.insertBefore(providerInfo, subscribeContainer.nextSibling);
+            } else {
+              subscribeContainer.parentNode.appendChild(providerInfo);
+            }
+            setTimeout(function () {
+              if (providerInfo.parentNode) {
+                providerInfo.parentNode.removeChild(providerInfo);
+              }
+            }, 5000);
           }
 
           if (!subscribeContainer) return;
@@ -900,7 +934,7 @@ function fetchConfigs(subscribeUrl, subscribeContainer, listId, section_id, isUr
     );
   };
 
-  xhr.send(subscribeUrl);
+  xhr.send(subscribePayload);
 }
 
 // Show temporary error
@@ -952,6 +986,66 @@ function enhanceSectionWithSubscribe(section) {
     return validation.message;
   };
 
+  o = section.option(
+    form.Value,
+    "subscribe_hwid",
+    _("HWID"),
+    _("Идентификатор устройства для подписок с HWID (например, Remnawave)")
+  );
+  o.depends("proxy_config_type", "url");
+  o.depends("proxy_config_type", "urltest");
+  o.depends("proxy_config_type", "selector");
+  o.placeholder = _("Авто (если оставить пустым)");
+  o.rmempty = true;
+
+  o = section.option(
+    form.Value,
+    "subscribe_device_os",
+    _("Device OS"),
+    _("Заголовок x-device-os (например: android, ios, windows)")
+  );
+  o.depends("proxy_config_type", "url");
+  o.depends("proxy_config_type", "urltest");
+  o.depends("proxy_config_type", "selector");
+  o.placeholder = "android";
+  o.rmempty = true;
+
+  o = section.option(
+    form.Value,
+    "subscribe_ver_os",
+    _("OS Version"),
+    _("Заголовок x-ver-os (например: 14.0, 17.2)")
+  );
+  o.depends("proxy_config_type", "url");
+  o.depends("proxy_config_type", "urltest");
+  o.depends("proxy_config_type", "selector");
+  o.placeholder = "14.0";
+  o.rmempty = true;
+
+  o = section.option(
+    form.Value,
+    "subscribe_device_model",
+    _("Device Model"),
+    _("Заголовок x-device-model (например: iPhone15,3, Pixel 8)")
+  );
+  o.depends("proxy_config_type", "url");
+  o.depends("proxy_config_type", "urltest");
+  o.depends("proxy_config_type", "selector");
+  o.placeholder = "Pixel 8";
+  o.rmempty = true;
+
+  o = section.option(
+    form.Value,
+    "subscribe_user_agent",
+    _("User-Agent"),
+    _("User-Agent для запроса подписки")
+  );
+  o.depends("proxy_config_type", "url");
+  o.depends("proxy_config_type", "urltest");
+  o.depends("proxy_config_type", "selector");
+  o.placeholder = "happ";
+  o.rmempty = true;
+
   // Fetch button for URL mode
   o = section.option(
     form.Button,
@@ -983,8 +1077,9 @@ function enhanceSectionWithSubscribe(section) {
         subscribeInput.parentElement;
     }
 
+    var subscribePayload = buildSubscribePayload(section_id, subscribeUrl);
     fetchConfigs(
-      subscribeUrl,
+      subscribePayload,
       subscribeContainer,
       "podkop-subscribe-config-list-" + section_id,
       section_id,
@@ -1026,8 +1121,9 @@ function enhanceSectionWithSubscribe(section) {
         subscribeInput.parentElement;
     }
 
+    var subscribePayload = buildSubscribePayload(section_id, subscribeUrl);
     fetchConfigs(
-      subscribeUrl,
+      subscribePayload,
       subscribeContainer,
       "podkop-subscribe-config-list-urltest-" + section_id,
       section_id,
@@ -1069,8 +1165,9 @@ function enhanceSectionWithSubscribe(section) {
         subscribeInput.parentElement;
     }
 
+    var subscribePayload = buildSubscribePayload(section_id, subscribeUrl);
     fetchConfigs(
-      subscribeUrl,
+      subscribePayload,
       subscribeContainer,
       "podkop-subscribe-config-list-selector-" + section_id,
       section_id,
