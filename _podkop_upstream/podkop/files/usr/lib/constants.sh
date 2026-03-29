@@ -64,7 +64,7 @@ SUBNETS_OVH="${GITHUB_RAW_URL}/Subnets/IPv4/ovh.lst"
 SUBNETS_DIGITALOCEAN="${GITHUB_RAW_URL}/Subnets/IPv4/digitalocean.lst"
 SUBNETS_CLOUDFRONT="${GITHUB_RAW_URL}/Subnets/IPv4/cloudfront.lst"
 
-LISTS_BASE_URL="https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/lists"
+LISTS_BASE_URL="https://raw.githubusercontent.com/wester11/podkoimpressive/main/lists"
 COMMUNITY_DOMAINS_BASE_URL="$LISTS_BASE_URL"
 COMMUNITY_SUBNETS_BASE_URL="$LISTS_BASE_URL"
 COMMUNITY_SERVICES="russia_inside russia_outside ukraine_inside geoblock block porn news anime youtube hdrezka tiktok google_ai google_play hodca discord meta twitter cloudflare cloudfront digitalocean hetzner ovh telegram roblox ai_all gaming social_networks messengers_calls video_audio_streaming news_media developer_platforms cloud_storage"

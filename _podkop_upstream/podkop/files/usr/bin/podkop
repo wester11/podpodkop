@@ -618,6 +618,45 @@ sing_box_configure_outbounds() {
     config_foreach configure_outbound_handler "section"
 }
 
+PROXY_LINKS_BUILD_CONFIG=""
+PROXY_LINKS_BUILD_SECTION=""
+PROXY_LINKS_BUILD_UDP="0"
+PROXY_LINKS_BUILD_INDEX=1
+PROXY_LINKS_BUILD_TAGS=""
+PROXY_LINKS_BUILD_DEFAULT=""
+
+reset_proxy_links_build_state() {
+    PROXY_LINKS_BUILD_CONFIG="$1"
+    PROXY_LINKS_BUILD_SECTION="$2"
+    PROXY_LINKS_BUILD_UDP="$3"
+    PROXY_LINKS_BUILD_INDEX=1
+    PROXY_LINKS_BUILD_TAGS=""
+    PROXY_LINKS_BUILD_DEFAULT=""
+}
+
+append_proxy_link_to_build_state() {
+    local link="$1"
+    local outbound_tag
+
+    [ -n "$link" ] || return 0
+
+    PROXY_LINKS_BUILD_CONFIG="$(sing_box_cf_add_proxy_outbound \
+        "$PROXY_LINKS_BUILD_CONFIG" \
+        "$PROXY_LINKS_BUILD_SECTION-$PROXY_LINKS_BUILD_INDEX" \
+        "$link" \
+        "$PROXY_LINKS_BUILD_UDP")"
+
+    outbound_tag="$(get_outbound_tag_by_section "$PROXY_LINKS_BUILD_SECTION-$PROXY_LINKS_BUILD_INDEX")"
+    if [ -z "$PROXY_LINKS_BUILD_TAGS" ]; then
+        PROXY_LINKS_BUILD_TAGS="$outbound_tag"
+        PROXY_LINKS_BUILD_DEFAULT="$outbound_tag"
+    else
+        PROXY_LINKS_BUILD_TAGS="$PROXY_LINKS_BUILD_TAGS,$outbound_tag"
+    fi
+
+    PROXY_LINKS_BUILD_INDEX=$((PROXY_LINKS_BUILD_INDEX + 1))
+}
+
 configure_outbound_handler() {
     local section="$1"
 
@@ -659,18 +698,26 @@ configure_outbound_handler() {
                 exit 1
             fi
 
-            i=1
-            for link in $selector_proxy_links; do
-                config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")"
-                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
-                if [ -z "$outbound_tags" ]; then
-                    outbound_tags="$outbound_tag"
-                    default_outbound="$outbound_tag"
-                else
-                    outbound_tags="$outbound_tags,$outbound_tag"
-                fi
-                i=$((i + 1))
-            done
+            reset_proxy_links_build_state "$config" "$section" "$udp_over_tcp"
+            config_list_foreach "$section" "selector_proxy_links" append_proxy_link_to_build_state
+
+            # Fallback for legacy scalar value layout.
+            if [ "$PROXY_LINKS_BUILD_INDEX" -eq 1 ] && [ -n "$selector_proxy_links" ]; then
+                i=1
+                for link in $selector_proxy_links; do
+                    append_proxy_link_to_build_state "$link"
+                    i=$((i + 1))
+                done
+            fi
+
+            if [ "$PROXY_LINKS_BUILD_INDEX" -eq 1 ]; then
+                log "No valid selector proxy links found. Aborted." "fatal"
+                exit 1
+            fi
+
+            config="$PROXY_LINKS_BUILD_CONFIG"
+            outbound_tags="$PROXY_LINKS_BUILD_TAGS"
+            default_outbound="$PROXY_LINKS_BUILD_DEFAULT"
 
             selector_tag="$(get_outbound_tag_by_section "$section")"
             selector_outbounds="$(comma_string_to_json_array "$outbound_tags")"
@@ -692,17 +739,25 @@ configure_outbound_handler() {
                 exit 1
             fi
 
-            i=1
-            for link in $urltest_proxy_links; do
-                config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")"
-                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
-                if [ -z "$outbound_tags" ]; then
-                    outbound_tags="$outbound_tag"
-                else
-                    outbound_tags="$outbound_tags,$outbound_tag"
-                fi
-                i=$((i + 1))
-            done
+            reset_proxy_links_build_state "$config" "$section" "$udp_over_tcp"
+            config_list_foreach "$section" "urltest_proxy_links" append_proxy_link_to_build_state
+
+            # Fallback for legacy scalar value layout.
+            if [ "$PROXY_LINKS_BUILD_INDEX" -eq 1 ] && [ -n "$urltest_proxy_links" ]; then
+                i=1
+                for link in $urltest_proxy_links; do
+                    append_proxy_link_to_build_state "$link"
+                    i=$((i + 1))
+                done
+            fi
+
+            if [ "$PROXY_LINKS_BUILD_INDEX" -eq 1 ]; then
+                log "No valid URLTest proxy links found. Aborted." "fatal"
+                exit 1
+            fi
+
+            config="$PROXY_LINKS_BUILD_CONFIG"
+            outbound_tags="$PROXY_LINKS_BUILD_TAGS"
 
             urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
             selector_tag="$(get_outbound_tag_by_section "$section")"
@@ -1142,7 +1197,7 @@ configure_remote_domain_or_subnet_list_handler() {
     json | srs)
         # Our repository stores plain-text lists with ".srs" extension.
         # Treat them as source lists instead of binary sing-box rule-sets.
-        if echo "$url" | grep -q "raw.githubusercontent.com/wester11/ru-net-blacklist/"; then
+        if is_custom_plaintext_srs_url "$url"; then
             log "Detected plain-text custom list in .srs format, import as source $type list"
             prepare_source_ruleset "$section" "remote" "$type" "$route_rule_tag"
             return 0
@@ -1168,6 +1223,20 @@ configure_remote_domain_or_subnet_list_handler() {
         ;;
     *)
         prepare_source_ruleset "$section" "remote" "$type" "$route_rule_tag"
+        ;;
+    esac
+}
+
+is_custom_plaintext_srs_url() {
+    local url="$1"
+
+    case "$url" in
+    https://raw.githubusercontent.com/wester11/ru-net-blacklist/* | \
+        https://raw.githubusercontent.com/wester11/podkoimpressive/*)
+        return 0
+        ;;
+    *)
+        return 1
         ;;
     esac
 }
@@ -1288,9 +1357,16 @@ sing_box_save_config() {
 
 sing_box_config_check() {
     local config_path="$1"
+    local check_output
 
-    if ! sing-box -c "$config_path" check > /dev/null 2>&1; then
+    check_output="$(sing-box -c "$config_path" check 2>&1)"
+    if [ $? -ne 0 ]; then
         log "Sing-box configuration $config_path is invalid. Aborted." "fatal"
+        if [ -n "$check_output" ]; then
+            echo "$check_output" | while IFS= read -r line; do
+                [ -n "$line" ] && log "sing-box check: $line" "error"
+            done
+        fi
         exit 1
     fi
 }

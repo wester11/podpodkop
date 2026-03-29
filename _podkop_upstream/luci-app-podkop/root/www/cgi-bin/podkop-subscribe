@@ -179,6 +179,10 @@ url_decode() {
     printf '%b' "$(echo "$1" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')" 2>/dev/null || echo "$1"
 }
 
+strip_fragment() {
+    echo "${1%%#*}"
+}
+
 # Parse all supported protocols
 json_init
 json_add_string "hwid" "$hwid"
@@ -231,6 +235,10 @@ while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$title" ]; then
             title="Config $index"
         fi
+
+        line="$(strip_fragment "$line")"
+        line="$(trim "$line")"
+        [ -z "$line" ] && continue
 
         json_add_object
         json_add_string "url" "$line"
