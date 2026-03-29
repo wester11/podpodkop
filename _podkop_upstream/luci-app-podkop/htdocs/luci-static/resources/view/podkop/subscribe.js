@@ -340,22 +340,9 @@ function getSubscribeUrl(ev, section_id, fieldName) {
   return "";
 }
 
-function getSectionOptionValue(section_id, fieldName) {
-  var input = findSubscribeInput(null, section_id, fieldName);
-  if (input && input.value) {
-    return input.value;
-  }
-  return "";
-}
-
 function buildSubscribePayload(section_id, subscribeUrl) {
   return JSON.stringify({
-    url: subscribeUrl,
-    hwid: getSectionOptionValue(section_id, "subscribe_hwid"),
-    device_os: getSectionOptionValue(section_id, "subscribe_device_os"),
-    ver_os: getSectionOptionValue(section_id, "subscribe_ver_os"),
-    device_model: getSectionOptionValue(section_id, "subscribe_device_model"),
-    user_agent: getSectionOptionValue(section_id, "subscribe_user_agent")
+    url: subscribeUrl
   });
 }
 
@@ -810,6 +797,24 @@ function updateDynamicList(section_id, baseId, selectedUrls, fieldName) {
 }
 
 // Fetch configs handler
+function setProxyString(section_id, proxyUrl) {
+  var proxyTextarea =
+    document.getElementById("widget.cbid.podkop." + section_id + ".proxy_string") ||
+    document.getElementById("cbid.podkop." + section_id + ".proxy_string") ||
+    document.querySelector('textarea[id*="podkop." + section_id + ".proxy_string"]');
+
+  if (!proxyTextarea) {
+    return false;
+  }
+
+  proxyTextarea.value = proxyUrl;
+  if (proxyTextarea.dispatchEvent) {
+    proxyTextarea.dispatchEvent(new Event("change", { bubbles: true }));
+    proxyTextarea.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  return true;
+}
+
 function fetchConfigs(subscribePayload, subscribeContainer, listId, section_id, isUrltest, isSelector) {
   // Remove old list for this section
   var existingList = document.getElementById(listId);
@@ -864,13 +869,67 @@ function fetchConfigs(subscribePayload, subscribeContainer, listId, section_id, 
             return;
           }
 
-          var configs = result.configs;
-          // Selector mode: auto-replace selector_proxy_links with all fetched configs.
+          var configs = result.configs || [];
+          var validUrls = configs
+            .map(function(cfg) { return cfg && cfg.url ? cfg.url : ""; })
+            .filter(function(url) { return !!url && !isXhttpConfig(url); });
+
+          if (validUrls.length === 0) {
+            showTemporaryError(subscribeContainer, _("Подходящие конфигурации не найдены"));
+            return;
+          }
+
           if (isSelector && section_id) {
-            var selectorUrls = configs
-              .map(function(cfg) { return cfg && cfg.url ? cfg.url : ""; })
-              .filter(function(url) { return !!url; });
-            updateSelectorProxyLinks(section_id, selectorUrls);
+            updateSelectorProxyLinks(section_id, validUrls);
+            if (subscribeContainer) {
+              var selectorInfo = createSuccessMessage(
+                _("Автоматически добавлено в Selector: ") + validUrls.length
+              );
+              if (subscribeContainer.nextSibling) {
+                subscribeContainer.parentNode.insertBefore(selectorInfo, subscribeContainer.nextSibling);
+              } else {
+                subscribeContainer.parentNode.appendChild(selectorInfo);
+              }
+              setTimeout(function () {
+                if (selectorInfo.parentNode) {
+                  selectorInfo.parentNode.removeChild(selectorInfo);
+                }
+              }, 5000);
+            }
+          } else if (isUrltest && section_id) {
+            updateUrltestProxyLinks(section_id, validUrls);
+            if (subscribeContainer) {
+              var urltestInfo = createSuccessMessage(
+                _("Автоматически добавлено в URLTest: ") + validUrls.length
+              );
+              if (subscribeContainer.nextSibling) {
+                subscribeContainer.parentNode.insertBefore(urltestInfo, subscribeContainer.nextSibling);
+              } else {
+                subscribeContainer.parentNode.appendChild(urltestInfo);
+              }
+              setTimeout(function () {
+                if (urltestInfo.parentNode) {
+                  urltestInfo.parentNode.removeChild(urltestInfo);
+                }
+              }, 5000);
+            }
+          } else if (section_id) {
+            setProxyString(section_id, validUrls[0]);
+            if (subscribeContainer) {
+              var urlInfo = createSuccessMessage(
+                _("Автоматически выбрана конфигурация для URL-режима")
+              );
+              if (subscribeContainer.nextSibling) {
+                subscribeContainer.parentNode.insertBefore(urlInfo, subscribeContainer.nextSibling);
+              } else {
+                subscribeContainer.parentNode.appendChild(urlInfo);
+              }
+              setTimeout(function () {
+                if (urlInfo.parentNode) {
+                  urlInfo.parentNode.removeChild(urlInfo);
+                }
+              }, 4000);
+            }
           }
 
           if (result.provider_id && subscribeContainer) {
@@ -887,28 +946,7 @@ function fetchConfigs(subscribePayload, subscribeContainer, listId, section_id, 
             }, 5000);
           }
 
-          if (!subscribeContainer) return;
-
-          var configListContainer = createConfigListUI(
-            configs,
-            listId,
-            section_id,
-            isUrltest,
-            isSelector
-          );
-
-          if (subscribeContainer.nextSibling) {
-            subscribeContainer.parentNode.insertBefore(
-              configListContainer,
-              subscribeContainer.nextSibling
-            );
-          } else {
-            subscribeContainer.parentNode.appendChild(configListContainer);
-          }
-
-          setTimeout(function () {
-            initConfigListHandlers();
-          }, 100);
+          return;
         } catch (e) {
           showTemporaryError(
             subscribeContainer,
@@ -986,66 +1024,6 @@ function enhanceSectionWithSubscribe(section) {
     return validation.message;
   };
 
-  o = section.option(
-    form.Value,
-    "subscribe_hwid",
-    _("HWID"),
-    _("Идентификатор устройства для подписок с HWID (например, Remnawave)")
-  );
-  o.depends("proxy_config_type", "url");
-  o.depends("proxy_config_type", "urltest");
-  o.depends("proxy_config_type", "selector");
-  o.placeholder = _("Авто (если оставить пустым)");
-  o.rmempty = true;
-
-  o = section.option(
-    form.Value,
-    "subscribe_device_os",
-    _("Device OS"),
-    _("Заголовок x-device-os (например: android, ios, windows)")
-  );
-  o.depends("proxy_config_type", "url");
-  o.depends("proxy_config_type", "urltest");
-  o.depends("proxy_config_type", "selector");
-  o.placeholder = "android";
-  o.rmempty = true;
-
-  o = section.option(
-    form.Value,
-    "subscribe_ver_os",
-    _("OS Version"),
-    _("Заголовок x-ver-os (например: 14.0, 17.2)")
-  );
-  o.depends("proxy_config_type", "url");
-  o.depends("proxy_config_type", "urltest");
-  o.depends("proxy_config_type", "selector");
-  o.placeholder = "14.0";
-  o.rmempty = true;
-
-  o = section.option(
-    form.Value,
-    "subscribe_device_model",
-    _("Device Model"),
-    _("Заголовок x-device-model (например: iPhone15,3, Pixel 8)")
-  );
-  o.depends("proxy_config_type", "url");
-  o.depends("proxy_config_type", "urltest");
-  o.depends("proxy_config_type", "selector");
-  o.placeholder = "Pixel 8";
-  o.rmempty = true;
-
-  o = section.option(
-    form.Value,
-    "subscribe_user_agent",
-    _("User-Agent"),
-    _("User-Agent для запроса подписки")
-  );
-  o.depends("proxy_config_type", "url");
-  o.depends("proxy_config_type", "urltest");
-  o.depends("proxy_config_type", "selector");
-  o.placeholder = "happ";
-  o.rmempty = true;
-
   // Fetch button for URL mode
   o = section.option(
     form.Button,
@@ -1095,7 +1073,7 @@ function enhanceSectionWithSubscribe(section) {
     form.Button,
     "subscribe_fetch_urltest",
     _("Получить конфигурации"),
-    _("Получить конфигурации из Subscribe URL для выбора в URLTest")
+    _("Получить и автоматически заменить конфигурации в URLTest")
   );
   o.depends("proxy_config_type", "urltest");
   o.inputtitle = _("Получить");
@@ -1139,7 +1117,7 @@ function enhanceSectionWithSubscribe(section) {
     form.Button,
     "subscribe_fetch_selector",
     _("Получить конфигурации"),
-    _("Получить конфигурации из Subscribe URL для выбора в Selector")
+    _("Получить и автоматически заменить конфигурации в Selector")
   );
   o.depends("proxy_config_type", "selector");
   o.inputtitle = _("Получить");

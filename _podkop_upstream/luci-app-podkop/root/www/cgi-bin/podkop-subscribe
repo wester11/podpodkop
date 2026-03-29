@@ -38,6 +38,22 @@ generate_auto_hwid() {
     fi
 }
 
+get_openwrt_release() {
+    grep -E "^DISTRIB_RELEASE=" /etc/openwrt_release 2>/dev/null | cut -d"'" -f2
+}
+
+get_device_model() {
+    local model
+    model="$(cat /tmp/sysinfo/model 2>/dev/null)"
+    if [ -z "$model" ]; then
+        model="$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+    fi
+    if [ -z "$model" ]; then
+        model="$(hostname 2>/dev/null)"
+    fi
+    echo "$model"
+}
+
 json_get_string_fallback() {
     local key="$1"
     local payload="$2"
@@ -59,18 +75,8 @@ if [ -n "$payload" ]; then
         \{*)
             if command -v jq >/dev/null 2>&1; then
                 url="$(echo "$payload" | jq -r '.url // empty' 2>/dev/null || true)"
-                hwid="$(echo "$payload" | jq -r '.hwid // empty' 2>/dev/null || true)"
-                device_os="$(echo "$payload" | jq -r '.device_os // empty' 2>/dev/null || true)"
-                ver_os="$(echo "$payload" | jq -r '.ver_os // empty' 2>/dev/null || true)"
-                device_model="$(echo "$payload" | jq -r '.device_model // empty' 2>/dev/null || true)"
-                user_agent="$(echo "$payload" | jq -r '.user_agent // empty' 2>/dev/null || true)"
             else
                 url="$(json_get_string_fallback "url" "$payload")"
-                hwid="$(json_get_string_fallback "hwid" "$payload")"
-                device_os="$(json_get_string_fallback "device_os" "$payload")"
-                ver_os="$(json_get_string_fallback "ver_os" "$payload")"
-                device_model="$(json_get_string_fallback "device_model" "$payload")"
-                user_agent="$(json_get_string_fallback "user_agent" "$payload")"
             fi
             ;;
         *)
@@ -98,7 +104,19 @@ if [ -z "$hwid" ]; then
 fi
 
 if [ -z "$user_agent" ]; then
-    user_agent="v2rayNG"
+    user_agent="happ"
+fi
+
+if [ -z "$device_os" ]; then
+    device_os="openwrt"
+fi
+
+if [ -z "$ver_os" ]; then
+    ver_os="$(get_openwrt_release)"
+fi
+
+if [ -z "$device_model" ]; then
+    device_model="$(get_device_model)"
 fi
 
 tmpfile="/tmp/podkop_subscribe_$$"
