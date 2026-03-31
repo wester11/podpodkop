@@ -12,24 +12,27 @@ set -eu
 
 # ---- Ready-to-use values ----
 # Podkop packages source (this repository releases)
-PODKOP_FORK_REPO="wester11/podkoimpressive"
+PODKOP_FORK_REPO="wester11/podpodkop"
 # Your lists repository:
-LISTS_BASE_URL="https://raw.githubusercontent.com/wester11/podkoimpressive/main/lists"
-SERVICES_BASE_URL="https://raw.githubusercontent.com/wester11/podkoimpressive/main/services"
+LISTS_BASE_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/lists"
+SERVICES_BASE_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/services"
 # Podkop custom config source (from custom podkop fork sources in this repository):
-PODKOP_CONFIG_URL="https://raw.githubusercontent.com/wester11/podkoimpressive/main/_podkop_upstream/podkop/files/etc/config/podkop"
-PODKOP_SECTION_JS_URL="https://raw.githubusercontent.com/wester11/podkoimpressive/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/section.js"
-PODKOP_SUBSCRIBE_JS_URL="https://raw.githubusercontent.com/wester11/podkoimpressive/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/subscribe.js"
-PODKOP_SUBSCRIBE_CGI_URL="https://raw.githubusercontent.com/wester11/podkoimpressive/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-subscribe"
-PODKOP_IMPORT_CGI_URL="https://raw.githubusercontent.com/wester11/podkoimpressive/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-import-subscription"
+PODKOP_CONFIG_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/etc/config/podkop"
+PODKOP_SECTION_JS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/section.js"
+PODKOP_SUBSCRIBE_JS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/subscribe.js"
+PODKOP_SUBSCRIBE_CGI_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-subscribe"
+PODKOP_IMPORT_CGI_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-import-subscription"
 
 PODKOP_RELEASE_TAG="${PODKOP_RELEASE_TAG:-}"
 DOWNLOAD_DIR="/tmp/podkop-fork"
 COUNT=3
+FETCH_TIMEOUT=20
+FETCH_CONNECT_TIMEOUT=10
 PODKOP_KEY="${PODKOP_KEY:-}"
 
 PKG_IS_APK=0
 command -v apk >/dev/null 2>&1 && PKG_IS_APK=1
+REPO_API=""
 
 msg() {
     printf "\033[32;1m%s\033[0m\n" "$1"
@@ -38,16 +41,16 @@ msg() {
 decode_key_payload() {
     encoded="$1"
     encoded="${encoded#PK1_}"
-    encoded="$(echo "$encoded" | tr '_-' '/+')"
+    encoded="$(printf '%s' "$encoded" | tr '_-' '/+')"
     rem=$(( ${#encoded} % 4 ))
     if [ "$rem" -eq 2 ]; then encoded="${encoded}=="; fi
     if [ "$rem" -eq 3 ]; then encoded="${encoded}="; fi
 
-    decoded="$(echo "$encoded" | base64 -d 2>/dev/null || true)"
+    decoded="$(printf '%s' "$encoded" | base64 -d 2>/dev/null || true)"
     if [ -z "$decoded" ] && command -v openssl >/dev/null 2>&1; then
-        decoded="$(echo "$encoded" | openssl base64 -d -A 2>/dev/null || true)"
+        decoded="$(printf '%s' "$encoded" | openssl base64 -d -A 2>/dev/null || true)"
     fi
-    echo "$decoded"
+    printf '%s\n' "$decoded"
 }
 
 add_remote_pair() {
@@ -73,6 +76,17 @@ is_custom_community_item() {
     esac
 }
 
+is_safe_slug() {
+    case "$1" in
+        *[!a-z0-9_]*|'')
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 apply_selected_lists_from_key() {
     payload="$(decode_key_payload "$PODKOP_KEY")"
     if [ -z "$payload" ]; then
@@ -88,7 +102,7 @@ apply_selected_lists_from_key() {
     IFS=','
     for item in $lists_csv; do
         [ -n "$item" ] || continue
-        if echo "$item" | grep -Eq '^[a-z0-9_]+$'; then
+        if is_safe_slug "$item"; then
             if is_custom_community_item "$item"; then
                 add_community_item "$item"
             else
@@ -99,7 +113,7 @@ apply_selected_lists_from_key() {
     done
     for item in $services_csv; do
         [ -n "$item" ] || continue
-        if echo "$item" | grep -Eq '^[a-z0-9_]+$'; then
+        if is_safe_slug "$item"; then
             add_remote_pair "${SERVICES_BASE_URL}/${item}/domains.srs" "${SERVICES_BASE_URL}/${item}/subnets.srs"
             selected_count=$((selected_count + 1))
         fi
@@ -119,6 +133,25 @@ warn() {
 
 err() {
     printf "\033[31;1m%s\033[0m\n" "$1"
+}
+
+fetch_text() {
+    url="$1"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout "$FETCH_CONNECT_TIMEOUT" --max-time "$FETCH_TIMEOUT" "$url"
+    else
+        wget -qO- --timeout="$FETCH_TIMEOUT" "$url"
+    fi
+}
+
+fetch_file() {
+    url="$1"
+    output="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout "$FETCH_CONNECT_TIMEOUT" --max-time "$FETCH_TIMEOUT" -o "$output" "$url"
+    else
+        wget -q --timeout="$FETCH_TIMEOUT" -O "$output" "$url"
+    fi
 }
 
 pkg_is_installed() {
@@ -167,7 +200,7 @@ update_config() {
         case "$CONFIG_UPDATE" in
             yes|y|Y)
                 cp /etc/config/podkop /etc/config/podkop-fork-backup 2>/dev/null || true
-                wget -O /etc/config/podkop "$PODKOP_CONFIG_URL"
+                fetch_file "$PODKOP_CONFIG_URL" /etc/config/podkop
                 msg "Config reset done. Backup: /etc/config/podkop-fork-backup"
                 break
                 ;;
@@ -255,15 +288,25 @@ prepare_ntp() {
 }
 
 download_release_packages() {
+    local release_json grep_url_pattern url filename filepath attempt
+
     rm -rf "$DOWNLOAD_DIR"
     mkdir -p "$DOWNLOAD_DIR"
 
-    if command -v curl >/dev/null 2>&1; then
-        check_response="$(curl -s "$REPO_API")"
-        if echo "$check_response" | grep -q "API rate limit"; then
-            err "GitHub API rate limit reached. Retry in a few minutes."
-            exit 1
-        fi
+    release_json="$(fetch_text "$REPO_API" 2>/dev/null || true)"
+    if [ -z "$release_json" ]; then
+        err "Failed to fetch release metadata from GitHub API."
+        exit 1
+    fi
+
+    if echo "$release_json" | grep -q "API rate limit"; then
+        err "GitHub API rate limit reached. Retry in a few minutes."
+        exit 1
+    fi
+
+    if echo "$release_json" | grep -q '"Not Found"'; then
+        err "Requested release was not found: ${PODKOP_RELEASE_TAG:-latest}"
+        exit 1
     fi
 
     if [ "$PKG_IS_APK" -eq 1 ]; then
@@ -272,14 +315,20 @@ download_release_packages() {
         grep_url_pattern='https://[^"[:space:]]*\.ipk'
     fi
 
-    wget -qO- "$REPO_API" | grep -o "$grep_url_pattern" | while read -r url; do
+    echo "$release_json" | grep -o "$grep_url_pattern" | sort -u > "$DOWNLOAD_DIR/.release_urls"
+    if [ ! -s "$DOWNLOAD_DIR/.release_urls" ]; then
+        err "No package URLs found in release metadata."
+        exit 1
+    fi
+
+    while read -r url; do
         filename="$(basename "$url")"
         filepath="$DOWNLOAD_DIR/$filename"
         attempt=0
 
         while [ "$attempt" -lt "$COUNT" ]; do
             msg "Downloading $filename (attempt $((attempt+1))/$COUNT)..."
-            if wget -q -O "$filepath" "$url" && [ -s "$filepath" ]; then
+            if fetch_file "$url" "$filepath" && [ -s "$filepath" ]; then
                 msg "$filename downloaded"
                 break
             fi
@@ -290,9 +339,9 @@ download_release_packages() {
         if [ "$attempt" -eq "$COUNT" ]; then
             warn "Failed to download $filename"
         fi
-    done
+    done < "$DOWNLOAD_DIR/.release_urls"
 
-    if ! ls "$DOWNLOAD_DIR"/*podkop* >/dev/null 2>&1; then
+    if ! find "$DOWNLOAD_DIR" -maxdepth 1 -type f -name '*podkop*' | grep -q .; then
         err "No podkop packages downloaded."
         exit 1
     fi
@@ -354,25 +403,25 @@ apply_subscribe_ui_patch() {
     mkdir -p "$cgi_dir"
 
     msg "Applying Subscribe UI patch..."
-    if wget -q -O "$subscribe_js" "$PODKOP_SUBSCRIBE_JS_URL"; then
+    if fetch_file "$PODKOP_SUBSCRIBE_JS_URL" "$subscribe_js"; then
         chmod 0644 "$subscribe_js" || true
     else
         warn "Failed to download subscribe.js"
     fi
 
-    if wget -q -O "$section_js" "$PODKOP_SECTION_JS_URL"; then
+    if fetch_file "$PODKOP_SECTION_JS_URL" "$section_js"; then
         chmod 0644 "$section_js" || true
     else
         warn "Failed to download patched section.js"
     fi
 
-    if wget -q -O "$cgi_file" "$PODKOP_SUBSCRIBE_CGI_URL"; then
+    if fetch_file "$PODKOP_SUBSCRIBE_CGI_URL" "$cgi_file"; then
         chmod 0755 "$cgi_file" || true
     else
         warn "Failed to download podkop-subscribe CGI endpoint"
     fi
 
-    if wget -q -O "$import_cgi_file" "$PODKOP_IMPORT_CGI_URL"; then
+    if fetch_file "$PODKOP_IMPORT_CGI_URL" "$import_cgi_file"; then
         chmod 0755 "$import_cgi_file" || true
     else
         warn "Failed to download podkop-import-subscription CGI endpoint"
@@ -416,7 +465,7 @@ apply_custom_lists() {
 }
 
 set_urltest_default_mode() {
-    local existing_urltest existing_selector existing_proxy has_urltest
+    local existing_urltest existing_selector existing_proxy
 
     if ! command -v uci >/dev/null 2>&1; then
         warn "uci not found, skip URLTest default mode setup."
@@ -447,22 +496,13 @@ EOF
         fi
     fi
 
-    has_urltest="$(uci -q get podkop.main.urltest_proxy_links 2>/dev/null || true)"
+    existing_urltest="$(uci -q get podkop.main.urltest_proxy_links 2>/dev/null || true)"
     uci -q set podkop.main.connection_type='proxy'
-    if [ -n "$has_urltest" ]; then
+    if [ -n "$existing_urltest" ]; then
         uci -q set podkop.main.proxy_config_type='urltest'
         msg "Default main mode set: Configuration Type = URLTest"
     else
         warn "No proxy links found, keep current proxy_config_type to avoid startup failure."
-    fi
-    uci -q delete podkop.main.urltest_proxy_links || true
-    if [ -n "$has_urltest" ]; then
-        while IFS= read -r link; do
-            [ -n "$link" ] || continue
-            uci -q add_list podkop.main.urltest_proxy_links="$link"
-        done <<EOF
-$has_urltest
-EOF
     fi
     uci commit podkop
 }
@@ -503,7 +543,7 @@ setup_mobile_import() {
 }
 
 cleanup() {
-    find "$DOWNLOAD_DIR" -type f -name '*podkop*' -exec rm {} \; 2>/dev/null || true
+    rm -rf "$DOWNLOAD_DIR" 2>/dev/null || true
 }
 
 print_finish() {
@@ -535,6 +575,7 @@ main() {
     else
         REPO_API="https://api.github.com/repos/${PODKOP_FORK_REPO}/releases/latest"
     fi
+    trap cleanup EXIT INT TERM
 
     check_system
     sing_box
@@ -548,7 +589,6 @@ main() {
     apply_custom_lists
     set_urltest_default_mode
     setup_mobile_import
-    cleanup
     print_finish
 }
 

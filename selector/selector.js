@@ -1,295 +1,547 @@
-// ── helpers ──────────────────────────────────────────────────────────────────
-
 async function loadCatalog() {
   const res = await fetch("./catalog.json", { cache: "no-store" });
-  if (!res.ok) throw new Error("catalog.json not found");
+  if (!res.ok) {
+    throw new Error("catalog.json not found");
+  }
   return res.json();
 }
 
 function toBase64Url(input) {
   const utf8 = new TextEncoder().encode(input);
   let bin = "";
-  utf8.forEach((b) => { bin += String.fromCharCode(b); });
+  utf8.forEach((byte) => {
+    bin += String.fromCharCode(byte);
+  });
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
+function debounce(fn, waitMs) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), waitMs);
+  };
+}
+
+const LIST_LABELS = {
+  ai_all: "AI-инструменты",
+  all_services: "Все сервисы",
+  cloud_storage: "Облачные хранилища",
+  creator_platforms: "Платформы авторов",
+  developer_platforms: "Разработка",
+  education: "Образование",
+  finance_payment: "Финансы и платежи",
+  forums_communities: "Форумы и сообщества",
+  gaming: "Игры",
+  messengers_calls: "Мессенджеры",
+  music_streaming: "Музыка",
+  news_media: "Новости и медиа",
+  productivity_tools: "Продуктивность",
+  social_messaging: "Соц. мессенджеры",
+  social_networks: "Социальные сети",
+  video_audio_streaming: "Видео и стриминг",
+  vpn_privacy: "VPN и приватность",
+  work_tools: "Рабочие инструменты",
+};
+
+const LIST_DESC = {
+  ai_all: "ChatGPT, Claude, Gemini, Grok, Copilot",
+  all_services: "Полный агрегированный список всех сервисов",
+  cloud_storage: "Dropbox, OneDrive, Mega",
+  creator_platforms: "Patreon, Behance, Envato, DeviantArt",
+  developer_platforms: "GitHub, GitLab, Docker, npm, Cloudflare",
+  education: "Coursera, Udemy, Duolingo, Khan Academy",
+  finance_payment: "PayPal, Stripe, Wise, Revolut",
+  forums_communities: "Reddit, Medium, Quora, Stack Overflow",
+  gaming: "Steam, Epic, Battle.net, Riot, EA, Xbox, PlayStation",
+  messengers_calls: "Telegram, Discord, Signal, Slack, Zoom",
+  music_streaming: "Spotify, Deezer, Tidal, Apple Music",
+  news_media: "BBC, CNN, Reuters, Meduza, Радио Свобода",
+  productivity_tools: "Notion, Figma, Miro, Canva, Trello",
+  social_messaging: "WhatsApp, Viber, Telegram, Snapchat",
+  social_networks: "Instagram, Facebook, X, TikTok, Tumblr",
+  video_audio_streaming: "YouTube, Twitch, Vimeo, Kick, Rumble",
+  vpn_privacy: "Mullvad, NordVPN, ExpressVPN, ProtonVPN",
+  work_tools: "Slack, Zoom, Skype, Notion, Figma, Miro",
+};
+
+const CATEGORY_LABELS = {
+  social: "Соц. сети",
+  msg: "Мессенджеры",
+  video: "Видео",
+  music: "Музыка",
+  gaming: "Игры",
+  ai: "AI",
+  dev: "Разработка",
+  cloud: "Облако",
+  work: "Работа",
+  edu: "Образование",
+  finance: "Финансы",
+  news: "Новости",
+  creator: "Для авторов",
+  vpn: "VPN",
+  other: "Прочее",
+};
+
+const CATEGORY_ORDER = [
+  "social",
+  "msg",
+  "video",
+  "music",
+  "gaming",
+  "ai",
+  "dev",
+  "cloud",
+  "work",
+  "edu",
+  "finance",
+  "news",
+  "creator",
+  "vpn",
+  "other",
+];
+
+const state = {
+  lists: [],
+  services: [],
+  categories: [],
+  openCategories: new Set(),
+  selectedLists: new Set(),
+  selectedServices: new Set(),
+  listFilter: "",
+  serviceFilter: "",
+};
+
+const refs = {};
+
+function normalize(value) {
+  return String(value || "").toLowerCase();
+}
+
 function buildToken() {
-  const listVals    = [...document.querySelectorAll("input[data-kind='list']:checked")].map(x => x.value);
-  const serviceVals = [...document.querySelectorAll("input[data-kind='service']:checked")].map(x => x.value);
+  const listVals = state.lists.filter((name) => state.selectedLists.has(name));
+  const serviceVals = state.services.filter((name) => state.selectedServices.has(name));
   const payload = `L=${listVals.join(",")};S=${serviceVals.join(",")}`;
   return "PK1_" + toBase64Url(payload);
 }
 
-// ── label helpers ────────────────────────────────────────────────────────────
-
-const LIST_LABELS = {
-  ai_all:               "🤖  AI-инструменты",
-  all_services:         "🌐  Все сервисы",
-  cloud_storage:        "☁️  Облачные хранилища",
-  creator_platforms:    "🎨  Платформы авторов",
-  developer_platforms:  "💻  Разработчики",
-  education:            "📚  Образование",
-  finance_payment:      "💳  Финансы и платежи",
-  forums_communities:   "💬  Форумы / сообщества",
-  gaming:               "🎮  Игры",
-  messengers_calls:     "📞  Мессенджеры",
-  music_streaming:      "🎵  Музыка",
-  news_media:           "📰  Новости / медиа",
-  productivity_tools:   "🛠️  Продуктивность",
-  social_messaging:     "📱  Соц. мессенджеры",
-  social_networks:      "👥  Социальные сети",
-  video_audio_streaming:"▶️  Видео / стриминг",
-  vpn_privacy:          "🔒  VPN / конфиденциальность",
-  work_tools:           "💼  Рабочие инструменты",
-};
-
-const LIST_DESC = {
-  ai_all:               "ChatGPT, Claude, Gemini, Grok, Copilot…",
-  all_services:         "Полный агрегированный список всех сервисов",
-  cloud_storage:        "Dropbox, OneDrive, Mega…",
-  creator_platforms:    "Patreon, Behance, Envato, DeviantArt…",
-  developer_platforms:  "GitHub, GitLab, Docker, npm, Cloudflare…",
-  education:            "Coursera, Udemy, Duolingo, Khan Academy…",
-  finance_payment:      "PayPal, Stripe, Wise, Revolut",
-  forums_communities:   "Reddit, Medium, Quora, Stack Overflow",
-  gaming:               "Steam, Epic, Battle.net, Riot, EA, Xbox, PS…",
-  messengers_calls:     "Telegram, Discord, Signal, Slack, Zoom…",
-  music_streaming:      "Spotify, Deezer, Tidal, Apple Music…",
-  news_media:           "BBC, CNN, Reuters, Meduza, Радио Свобода…",
-  productivity_tools:   "Notion, Figma, Miro, Canva, Trello…",
-  social_messaging:     "WhatsApp, Viber, Telegram, Snapchat…",
-  social_networks:      "Instagram, Facebook, X, TikTok, Tumblr…",
-  video_audio_streaming:"YouTube, Twitch, Vimeo, Kick, Rumble…",
-  vpn_privacy:          "Mullvad, NordVPN, ExpressVPN, ProtonVPN…",
-  work_tools:           "Slack, Zoom, Skype, Notion, Figma, Miro…",
-};
-
-// category → list of service IDs
-const SVC_CATEGORIES = [
-  { id: "social",   label: "👥  Соц. сети",          services: ["facebook","instagram","x_twitter","tiktok","snapchat","pinterest","linkedin","tumblr"] },
-  { id: "msg",      label: "💬  Мессенджеры",         services: ["telegram","whatsapp","discord","signal","viber","skype","slack","zoom","facetime","protonmail"] },
-  { id: "video",    label: "▶️  Видео / стриминг",   services: ["youtube","twitch","tiktok","vimeo","kick","rumble","dailymotion","spotify","soundcloud"] },
-  { id: "music",    label: "🎵  Музыка",              services: ["spotify","deezer","tidal","apple_music","soundcloud","lastfm"] },
-  { id: "gaming",   label: "🎮  Игры",               services: ["steam","epic_games","battle_net","riot_games","ea_games","gog","ubisoft","minecraft","xbox","playstation","roblox","metacritic"] },
-  { id: "ai",       label: "🤖  AI",                  services: ["chatgpt","claude","gemini","grok","microsoft_copilot","deepseek","perplexity","cursor","poe","midjourney","huggingface"] },
-  { id: "dev",      label: "💻  Разработка",          services: ["github","gitlab","stackoverflow","huggingface","docker_hub","npm_registry","cloudflare"] },
-  { id: "cloud",    label: "☁️  Облако",              services: ["dropbox","onedrive","mega","google_news"] },
-  { id: "work",     label: "💼  Работа",              services: ["slack","zoom","skype","notion","trello","miro","figma","canva"] },
-  { id: "edu",      label: "📚  Образование",         services: ["coursera","udemy","duolingo","khan_academy","edx","skillshare"] },
-  { id: "finance",  label: "💳  Финансы",             services: ["paypal","stripe","wise","revolut"] },
-  { id: "news",     label: "📰  Новости",             services: ["bbc","cnn","dw","euronews","associated_press","wsj","google_news","meduza","radio_svoboda"] },
-  { id: "creator",  label: "🎨  Авторам",             services: ["patreon","behance","deviantart","envato","medium","pinterest"] },
-  { id: "vpn",      label: "🔒  VPN",                 services: ["mullvad","nordvpn","expressvpn","protonvpn","protonmail"] },
-  { id: "other",    label: "🔧  Прочее",              services: ["reddit","quora","speedtest","twitch"] },
-];
-
-// ── render counters & tags ────────────────────────────────────────────────────
-
-function updateCounters() {
-  const lists    = [...document.querySelectorAll("input[data-kind='list']:checked")].map(x => x.value);
-  const services = [...document.querySelectorAll("input[data-kind='service']:checked")].map(x => x.value);
-  const total    = lists.length + services.length;
-
-  document.getElementById("selTotal").textContent = total;
-  document.getElementById("listsCnt").textContent = lists.length;
-  document.getElementById("svcCnt").textContent   = services.length;
-
-  // tags
-  const row = document.getElementById("tagsRow");
-  row.innerHTML = "";
-  if (!total) {
-    row.innerHTML = '<span class="empty-hint">Ничего не выбрано</span>';
-    return;
-  }
-  lists.forEach(v => {
-    const tag = document.createElement("span");
-    tag.className = "tag tag-list";
-    tag.innerHTML = `${LIST_LABELS[v] || v} <i class="rm" data-kind="list" data-val="${v}">✕</i>`;
-    row.appendChild(tag);
-  });
-  services.forEach(v => {
-    const tag = document.createElement("span");
-    tag.className = "tag";
-    tag.innerHTML = `${v} <i class="rm" data-kind="service" data-val="${v}">✕</i>`;
-    row.appendChild(tag);
-  });
-
-  // update per-category sel counts
-  SVC_CATEGORIES.forEach(cat => {
-    const selEl = document.getElementById("cat-sel-" + cat.id);
-    if (!selEl) return;
-    const selCount = cat.services.filter(s => {
-      const cb = document.querySelector(`input[data-kind="service"][value="${s}"]`);
-      return cb && cb.checked;
-    }).length;
-    selEl.textContent = selCount ? `(${selCount})` : "";
-  });
+function createCheckbox(kind, value, checked) {
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.dataset.kind = kind;
+  input.value = value;
+  input.checked = checked;
+  return input;
 }
 
-// click on ✕ in tag
-document.addEventListener("click", e => {
-  if (e.target.classList.contains("rm")) {
-    const kind = e.target.dataset.kind;
-    const val  = e.target.dataset.val;
-    const cb   = document.querySelector(`input[data-kind="${kind}"][value="${val}"]`);
-    if (cb) { cb.checked = false; updateCounters(); }
-  }
-});
-
-// ── render lists panel ───────────────────────────────────────────────────────
-
-function renderLists(names, filter) {
-  const box = document.getElementById("listsBox");
-  box.innerHTML = "";
-  const q = (filter || "").toLowerCase();
+function renderLists() {
+  const q = normalize(state.listFilter.trim());
+  const frag = document.createDocumentFragment();
   let shown = 0;
-  names.forEach(name => {
-    const label = LIST_LABELS[name] || name;
-    const desc  = LIST_DESC[name]   || "";
-    if (q && !name.includes(q) && !label.toLowerCase().includes(q) && !desc.toLowerCase().includes(q)) return;
-    shown++;
-    const div = document.createElement("label");
-    div.className = "list-item";
-    div.innerHTML = `
-      <input type="checkbox" data-kind="list" value="${name}">
-      <div>
-        <div class="li-name">${label}</div>
-        ${desc ? `<div class="li-desc">${desc}</div>` : ""}
-      </div>`;
-    div.querySelector("input").addEventListener("change", updateCounters);
-    box.appendChild(div);
+
+  state.lists.forEach((name) => {
+    const labelText = LIST_LABELS[name] || name;
+    const descText = LIST_DESC[name] || "";
+    if (
+      q &&
+      !normalize(name).includes(q) &&
+      !normalize(labelText).includes(q) &&
+      !normalize(descText).includes(q)
+    ) {
+      return;
+    }
+
+    shown += 1;
+    const row = document.createElement("label");
+    row.className = "list-item";
+
+    const checkbox = createCheckbox("list", name, state.selectedLists.has(name));
+    const textWrap = document.createElement("div");
+    const nameEl = document.createElement("div");
+    nameEl.className = "li-name";
+    nameEl.textContent = labelText;
+    textWrap.appendChild(nameEl);
+
+    if (descText) {
+      const descEl = document.createElement("div");
+      descEl.className = "li-desc";
+      descEl.textContent = descText;
+      textWrap.appendChild(descEl);
+    }
+
+    row.appendChild(checkbox);
+    row.appendChild(textWrap);
+    frag.appendChild(row);
   });
-  if (!shown) box.innerHTML = '<div class="no-match">Ничего не найдено</div>';
+
+  refs.listsBox.replaceChildren(frag);
+  if (!shown) {
+    refs.listsBox.innerHTML = '<div class="no-match">Ничего не найдено</div>';
+  }
 }
 
-// ── render services panel (categorized) ──────────────────────────────────────
+function renderServices() {
+  const q = normalize(state.serviceFilter.trim());
+  const frag = document.createDocumentFragment();
+  let shownBlocks = 0;
 
-function renderServices(allServices, filter) {
-  const box = document.getElementById("servicesBox");
-  box.innerHTML = "";
-  const q = (filter || "").toLowerCase();
+  state.categories.forEach((cat) => {
+    const allMembers = cat.services.filter((svc) => state.services.includes(svc));
+    if (!allMembers.length) {
+      return;
+    }
 
-  // collect which services are known and in which category
-  const assigned = new Set();
-  SVC_CATEGORIES.forEach(cat => cat.services.forEach(s => assigned.add(s)));
+    const visibleMembers = q
+      ? allMembers.filter((svc) => normalize(svc).includes(q))
+      : allMembers;
 
-  // add "other" for uncategorised
-  const otherCat = SVC_CATEGORIES.find(c => c.id === "other") || { id: "other", label: "🔧  Прочее", services: [] };
-  allServices.forEach(s => { if (!assigned.has(s)) otherCat.services.push(s); });
+    if (!visibleMembers.length) {
+      return;
+    }
 
-  SVC_CATEGORIES.forEach(cat => {
-    // filter members to those that exist in catalog
-    const members = cat.services.filter(s => allServices.includes(s));
-    // apply search
-    const visible = q ? members.filter(s => s.includes(q)) : members;
-    if (!visible.length) return;
-
+    shownBlocks += 1;
     const block = document.createElement("div");
     block.className = "cat-block";
 
     const head = document.createElement("div");
     head.className = "cat-head";
-    head.id = "cat-head-" + cat.id;
-    head.innerHTML = `
-      <span class="arrow">▶</span>
-      <span>${cat.label}</span>
-      <span class="cat-sel" id="cat-sel-${cat.id}"></span>
-      <span class="cat-cnt">${visible.length}</span>`;
+    head.dataset.catId = cat.id;
+
+    const isOpen = q.length > 0 || state.openCategories.has(cat.id);
+    if (isOpen) {
+      head.classList.add("open");
+    }
+
+    const arrow = document.createElement("span");
+    arrow.className = "arrow";
+    arrow.textContent = "▶";
+
+    const label = document.createElement("span");
+    label.textContent = cat.label;
+
+    const selectedCount = allMembers.reduce(
+      (acc, svc) => acc + (state.selectedServices.has(svc) ? 1 : 0),
+      0,
+    );
+    const sel = document.createElement("span");
+    sel.className = "cat-sel";
+    sel.id = `cat-sel-${cat.id}`;
+    sel.textContent = selectedCount ? `(${selectedCount})` : "";
+
+    const cnt = document.createElement("span");
+    cnt.className = "cat-cnt";
+    cnt.textContent = String(visibleMembers.length);
+
+    head.appendChild(arrow);
+    head.appendChild(label);
+    head.appendChild(sel);
+    head.appendChild(cnt);
 
     const body = document.createElement("div");
-    body.className = "cat-body" + (q ? "" : " hidden");
-    body.id = "cat-body-" + cat.id;
+    body.className = "cat-body";
+    body.id = `cat-body-${cat.id}`;
+    if (!isOpen) {
+      body.classList.add("hidden");
+    }
 
-    head.addEventListener("click", () => {
-      const isOpen = !body.classList.contains("hidden");
-      body.classList.toggle("hidden", isOpen);
-      head.classList.toggle("open", !isOpen);
-    });
-
-    if (q) head.classList.add("open");
-
-    visible.forEach(svc => {
+    visibleMembers.forEach((svc) => {
       const item = document.createElement("label");
       item.className = "svc-item";
-      item.innerHTML = `<input type="checkbox" data-kind="service" value="${svc}"><span class="svc-label">${svc}</span>`;
-      item.querySelector("input").addEventListener("change", updateCounters);
+
+      const checkbox = createCheckbox("service", svc, state.selectedServices.has(svc));
+      const text = document.createElement("span");
+      text.className = "svc-label";
+      text.textContent = svc;
+
+      item.appendChild(checkbox);
+      item.appendChild(text);
       body.appendChild(item);
     });
 
     block.appendChild(head);
     block.appendChild(body);
-    box.appendChild(block);
+    frag.appendChild(block);
   });
 
-  if (!box.children.length) box.innerHTML = '<div class="no-match">Ничего не найдено</div>';
+  refs.servicesBox.replaceChildren(frag);
+  if (!shownBlocks) {
+    refs.servicesBox.innerHTML = '<div class="no-match">Ничего не найдено</div>';
+  }
 }
 
-// ── main ─────────────────────────────────────────────────────────────────────
+function renderTags() {
+  const total = state.selectedLists.size + state.selectedServices.size;
+  refs.selTotal.textContent = String(total);
+  refs.listsCnt.textContent = String(state.selectedLists.size);
+  refs.svcCnt.textContent = String(state.selectedServices.size);
+
+  if (!total) {
+    refs.tagsRow.innerHTML = '<span class="empty-hint">Ничего не выбрано</span>';
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  state.lists.forEach((name) => {
+    if (!state.selectedLists.has(name)) {
+      return;
+    }
+    const tag = document.createElement("span");
+    tag.className = "tag tag-list";
+    const txt = document.createElement("span");
+    txt.textContent = LIST_LABELS[name] || name;
+    const rm = document.createElement("i");
+    rm.className = "rm";
+    rm.dataset.kind = "list";
+    rm.dataset.val = name;
+    rm.textContent = "✕";
+    tag.appendChild(txt);
+    tag.appendChild(rm);
+    frag.appendChild(tag);
+  });
+
+  state.services.forEach((name) => {
+    if (!state.selectedServices.has(name)) {
+      return;
+    }
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    const txt = document.createElement("span");
+    txt.textContent = name;
+    const rm = document.createElement("i");
+    rm.className = "rm";
+    rm.dataset.kind = "service";
+    rm.dataset.val = name;
+    rm.textContent = "✕";
+    tag.appendChild(txt);
+    tag.appendChild(rm);
+    frag.appendChild(tag);
+  });
+
+  refs.tagsRow.replaceChildren(frag);
+}
+
+function renderAll() {
+  renderLists();
+  renderServices();
+  renderTags();
+}
+
+function toggleSelection(kind, value, checked) {
+  const targetSet = kind === "list" ? state.selectedLists : state.selectedServices;
+  if (checked) {
+    targetSet.add(value);
+  } else {
+    targetSet.delete(value);
+  }
+  renderTags();
+}
+
+function setAll(kind, checked) {
+  if (kind === "list") {
+    if (checked) {
+      state.lists.forEach((name) => state.selectedLists.add(name));
+    } else {
+      state.selectedLists.clear();
+    }
+    renderLists();
+    renderTags();
+    return;
+  }
+
+  if (checked) {
+    state.services.forEach((name) => state.selectedServices.add(name));
+  } else {
+    state.selectedServices.clear();
+  }
+  renderServices();
+  renderTags();
+}
+
+function buildCategories(catalog) {
+  const byId = new Map();
+  const inputCategories = catalog.categories || {};
+
+  Object.entries(inputCategories).forEach(([id, members]) => {
+    byId.set(id, {
+      id,
+      label: CATEGORY_LABELS[id] || id,
+      services: Array.isArray(members) ? [...new Set(members)] : [],
+    });
+  });
+
+  const knownServices = new Set(catalog.services || []);
+  const categorized = new Set();
+  byId.forEach((cat) => {
+    cat.services = cat.services.filter((svc) => knownServices.has(svc));
+    cat.services.forEach((svc) => categorized.add(svc));
+  });
+
+  const uncategorized = [...knownServices].filter((svc) => !categorized.has(svc)).sort();
+  if (!byId.has("other")) {
+    byId.set("other", { id: "other", label: CATEGORY_LABELS.other, services: uncategorized });
+  } else {
+    const other = byId.get("other");
+    other.services = [...new Set([...other.services, ...uncategorized])];
+  }
+
+  const ordered = [];
+  CATEGORY_ORDER.forEach((id) => {
+    if (byId.has(id) && byId.get(id).services.length) {
+      ordered.push(byId.get(id));
+      byId.delete(id);
+    }
+  });
+
+  [...byId.values()]
+    .filter((cat) => cat.services.length)
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .forEach((cat) => ordered.push(cat));
+
+  return ordered;
+}
+
+async function copyToken(token) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(token);
+    return;
+  }
+
+  refs.token.select();
+  const copied = document.execCommand("copy");
+  if (!copied) {
+    throw new Error("Clipboard API unavailable");
+  }
+}
+
+function initRefs() {
+  refs.listsBox = document.getElementById("listsBox");
+  refs.servicesBox = document.getElementById("servicesBox");
+  refs.tagsRow = document.getElementById("tagsRow");
+  refs.selTotal = document.getElementById("selTotal");
+  refs.listsCnt = document.getElementById("listsCnt");
+  refs.svcCnt = document.getElementById("svcCnt");
+  refs.listsSearch = document.getElementById("listsSearch");
+  refs.svcSearch = document.getElementById("svcSearch");
+  refs.token = document.getElementById("token");
+  refs.copyBtn = document.getElementById("copy");
+}
+
+function bindEvents() {
+  refs.listsBox.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!target || target.dataset.kind !== "list") {
+      return;
+    }
+    toggleSelection("list", target.value, target.checked);
+  });
+
+  refs.servicesBox.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!target || target.dataset.kind !== "service") {
+      return;
+    }
+    toggleSelection("service", target.value, target.checked);
+  });
+
+  refs.servicesBox.addEventListener("click", (event) => {
+    const head = event.target.closest(".cat-head");
+    if (!head || state.serviceFilter.trim()) {
+      return;
+    }
+    const catId = head.dataset.catId;
+    if (!catId) {
+      return;
+    }
+    if (state.openCategories.has(catId)) {
+      state.openCategories.delete(catId);
+    } else {
+      state.openCategories.add(catId);
+    }
+    renderServices();
+  });
+
+  refs.tagsRow.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!target.classList.contains("rm")) {
+      return;
+    }
+    const { kind, val } = target.dataset;
+    if (!kind || !val) {
+      return;
+    }
+    if (kind === "list") {
+      state.selectedLists.delete(val);
+      renderLists();
+    } else if (kind === "service") {
+      state.selectedServices.delete(val);
+      renderServices();
+    }
+    renderTags();
+  });
+
+  const onListSearch = debounce((value) => {
+    state.listFilter = value;
+    renderLists();
+  }, 80);
+  refs.listsSearch.addEventListener("input", (event) => {
+    onListSearch(event.target.value);
+  });
+
+  const onServiceSearch = debounce((value) => {
+    state.serviceFilter = value;
+    renderServices();
+  }, 80);
+  refs.svcSearch.addEventListener("input", (event) => {
+    onServiceSearch(event.target.value);
+  });
+
+  document.getElementById("listsSelAll").addEventListener("click", () => setAll("list", true));
+  document.getElementById("listsClearBtn").addEventListener("click", () => setAll("list", false));
+  document.getElementById("svcSelAll").addEventListener("click", () => setAll("service", true));
+  document.getElementById("svcClearBtn").addEventListener("click", () => setAll("service", false));
+
+  document.getElementById("gen").addEventListener("click", () => {
+    refs.token.value = buildToken();
+  });
+
+  refs.copyBtn.addEventListener("click", async () => {
+    if (!refs.token.value) {
+      refs.token.value = buildToken();
+    }
+    try {
+      await copyToken(refs.token.value);
+      refs.copyBtn.textContent = "✓ Скопировано";
+      refs.copyBtn.classList.add("copied");
+      setTimeout(() => {
+        refs.copyBtn.textContent = "📋 Копировать";
+        refs.copyBtn.classList.remove("copied");
+      }, 1600);
+    } catch (err) {
+      alert("Не удалось скопировать ключ. Скопируйте вручную из поля ниже.");
+    }
+  });
+
+  document.getElementById("resetAll").addEventListener("click", () => {
+    state.selectedLists.clear();
+    state.selectedServices.clear();
+    refs.token.value = "";
+    renderAll();
+  });
+}
 
 async function main() {
+  initRefs();
   const catalog = await loadCatalog();
-  const allLists    = catalog.lists    || [];
-  const allServices = catalog.services || [];
 
-  renderLists(allLists, "");
-  renderServices(allServices, "");
-  updateCounters();
+  state.lists = Array.isArray(catalog.lists) ? [...catalog.lists].sort() : [];
+  state.services = Array.isArray(catalog.services) ? [...catalog.services].sort() : [];
+  state.categories = buildCategories(catalog);
 
-  // search
-  document.getElementById("listsSearch").addEventListener("input", e => {
-    renderLists(allLists, e.target.value);
-    updateCounters();
-  });
-  document.getElementById("svcSearch").addEventListener("input", e => {
-    renderServices(allServices, e.target.value);
-    updateCounters();
-  });
-
-  // select all / clear for lists
-  document.getElementById("listsSelAll").addEventListener("click", () => {
-    document.querySelectorAll("input[data-kind='list']").forEach(cb => { cb.checked = true; });
-    updateCounters();
-  });
-  document.getElementById("listsClearBtn").addEventListener("click", () => {
-    document.querySelectorAll("input[data-kind='list']").forEach(cb => { cb.checked = false; });
-    updateCounters();
-  });
-
-  // select all / clear for services
-  document.getElementById("svcSelAll").addEventListener("click", () => {
-    document.querySelectorAll("input[data-kind='service']").forEach(cb => { cb.checked = true; });
-    updateCounters();
-  });
-  document.getElementById("svcClearBtn").addEventListener("click", () => {
-    document.querySelectorAll("input[data-kind='service']").forEach(cb => { cb.checked = false; });
-    updateCounters();
-  });
-
-  // generate
-  const tokenEl = document.getElementById("token");
-  document.getElementById("gen").addEventListener("click", () => {
-    tokenEl.value = buildToken();
-  });
-
-  // copy
-  const copyBtn = document.getElementById("copy");
-  copyBtn.addEventListener("click", async () => {
-    if (!tokenEl.value) tokenEl.value = buildToken();
-    await navigator.clipboard.writeText(tokenEl.value);
-    copyBtn.textContent = "✔ Скопировано";
-    copyBtn.classList.add("copied");
-    setTimeout(() => { copyBtn.textContent = "📋 Копировать"; copyBtn.classList.remove("copied"); }, 1800);
-  });
-
-  // reset all
-  document.getElementById("resetAll").addEventListener("click", () => {
-    document.querySelectorAll("input[data-kind='list'],input[data-kind='service']").forEach(cb => { cb.checked = false; });
-    tokenEl.value = "";
-    updateCounters();
-  });
+  bindEvents();
+  renderAll();
 }
 
-main().catch(e => {
-  console.error(e);
-  alert("Не удалось загрузить catalog.json: " + e.message);
+main().catch((error) => {
+  console.error(error);
+  alert("Не удалось загрузить catalog.json: " + error.message);
 });

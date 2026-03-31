@@ -1,17 +1,17 @@
 # Кастомный Podkop (релизы этого репозитория)
 
-`install.sh` устанавливает Podkop-пакеты из релизов `wester11/ru-net-blacklist`.
+`install.sh` устанавливает Podkop-пакеты из релизов `wester11/podpodkop`.
 
 ## Установка одной командой
 
 ```sh
-sh <(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/podkop-fork/install.sh)
+sh <(wget -O - https://raw.githubusercontent.com/wester11/podpodkop/main/podkop-fork/install.sh)
 ```
 
 Также доступен короткий wrapper:
 
 ```sh
-sh <(wget -O - https://raw.githubusercontent.com/wester11/ru-net-blacklist/main/install.sh)
+sh <(wget -O - https://raw.githubusercontent.com/wester11/podpodkop/main/install.sh)
 ```
 
 После установки обновите страницу LuCI с очисткой кэша браузера (Ctrl+F5).

@@ -1250,7 +1250,7 @@ is_custom_plaintext_srs_url() {
 
     case "$url" in
     https://raw.githubusercontent.com/wester11/ru-net-blacklist/* | \
-        https://raw.githubusercontent.com/wester11/podkoimpressive/*)
+        https://raw.githubusercontent.com/wester11/podpodkop/*)
         return 0
         ;;
     *)

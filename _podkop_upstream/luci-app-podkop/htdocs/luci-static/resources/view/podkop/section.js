@@ -331,7 +331,7 @@ function createSectionContent(section) {
     "community_lists",
     _("Community Lists"),
     _("Select a predefined list for routing") +
-      ' <a href="https://github.com/wester11/podkoimpressive" target="_blank">github.com/wester11/podkoimpressive</a>',
+      ' <a href="https://github.com/wester11/podpodkop" target="_blank">github.com/wester11/podpodkop</a>',
   );
   o.placeholder = "Service list";
   Object.entries(main.DOMAIN_LIST_OPTIONS).forEach(([key, label]) => {
