@@ -13,6 +13,8 @@ CLOUDFLARE_OCTETS="8.47 162.159 188.114" # Endpoints https://github.com/ampeteli
 JQ_REQUIRED_VERSION="1.7.1"
 COREUTILS_BASE64_REQUIRED_VERSION="9.7"
 RT_TABLE_NAME="podkop"
+PODKOP_LIST_UPDATE_PID_FILE="/var/run/podkop_list_update.pid"
+PODKOP_FAILOVER_PID_FILE="/var/run/podkop_failover_watchdog.pid"
 
 ## nft
 NFT_TABLE_NAME="PodkopTable"
@@ -44,6 +46,7 @@ SB_SERVICE_MIXED_INBOUND_ADDRESS="127.0.0.1"
 SB_SERVICE_MIXED_INBOUND_PORT=4534
 # Outbounds
 SB_DIRECT_OUTBOUND_TAG="direct-out"
+SB_FAILOVER_SELECTOR_OUTBOUND_TAG="podkop-failover-out"
 # Route
 SB_REJECT_RULE_TAG="reject-rule-tag"
 SB_EXCLUSION_RULE_TAG="exclusion-rule-tag"

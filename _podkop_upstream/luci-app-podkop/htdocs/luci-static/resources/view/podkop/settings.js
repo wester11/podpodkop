@@ -322,6 +322,161 @@ function createSettingsContent(section) {
 
   o = section.option(
     form.Flag,
+    "enable_section_failover",
+    _("Enable Section Failover"),
+    _("Automatically switch traffic from primary section to secondary section when connectivity is lost"),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.option(
+    form.ListValue,
+    "failover_primary_section",
+    _("Failover Primary Section"),
+    _("Primary section used under normal conditions"),
+  );
+  o.depends("enable_section_failover", "1");
+  o.rmempty = false;
+  o.default = "main";
+  o.cfgvalue = function (section_id) {
+    return uci.get("podkop", section_id, "failover_primary_section");
+  };
+  o.load = function () {
+    const sections = this.map?.data?.state?.values?.podkop ?? {};
+
+    this.keylist = [];
+    this.vallist = [];
+
+    for (const secName in sections) {
+      const sec = sections[secName];
+      if (sec[".type"] === "section") {
+        this.keylist.push(secName);
+        this.vallist.push(secName);
+      }
+    }
+
+    return Promise.resolve();
+  };
+
+  o = section.option(
+    form.ListValue,
+    "failover_secondary_section",
+    _("Failover Secondary Section"),
+    _("Backup section that is activated after failover trigger"),
+  );
+  o.depends("enable_section_failover", "1");
+  o.rmempty = false;
+  o.cfgvalue = function (section_id) {
+    return uci.get("podkop", section_id, "failover_secondary_section");
+  };
+  o.load = function () {
+    const sections = this.map?.data?.state?.values?.podkop ?? {};
+
+    this.keylist = [];
+    this.vallist = [];
+
+    for (const secName in sections) {
+      const sec = sections[secName];
+      if (sec[".type"] === "section") {
+        this.keylist.push(secName);
+        this.vallist.push(secName);
+      }
+    }
+
+    return Promise.resolve();
+  };
+
+  o = section.option(
+    form.Value,
+    "failover_check_url",
+    _("Failover Check URL"),
+    _("Connectivity check URL (default: Google generate_204 endpoint)"),
+  );
+  o.depends("enable_section_failover", "1");
+  o.default = "https://www.google.com/generate_204";
+  o.rmempty = false;
+  o.validate = function (section_id, value) {
+    const validation = main.validateUrl(value);
+
+    if (validation.valid) {
+      return true;
+    }
+
+    return validation.message;
+  };
+
+  o = section.option(
+    form.Value,
+    "failover_check_interval",
+    _("Failover Check Interval (sec)"),
+    _("How often connectivity is checked"),
+  );
+  o.depends("enable_section_failover", "1");
+  o.default = "5";
+  o.rmempty = false;
+  o.validate = function (section_id, value) {
+    if (!value) {
+      return _("Interval cannot be empty");
+    }
+    const parsed = parseInt(value);
+    if (isNaN(parsed) || parsed < 1 || parsed > 300) {
+      return _("Interval must be a number in range 1-300");
+    }
+    return true;
+  };
+
+  o = section.option(
+    form.Value,
+    "failover_fail_threshold",
+    _("Failover Trigger Timeout (sec)"),
+    _("Switch to secondary section after this many seconds of failed checks"),
+  );
+  o.depends("enable_section_failover", "1");
+  o.default = "30";
+  o.rmempty = false;
+  o.validate = function (section_id, value) {
+    if (!value) {
+      return _("Timeout cannot be empty");
+    }
+    const parsed = parseInt(value);
+    if (isNaN(parsed) || parsed < 5 || parsed > 3600) {
+      return _("Timeout must be a number in range 5-3600");
+    }
+    return true;
+  };
+
+  o = section.option(
+    form.Value,
+    "failover_recovery_threshold",
+    _("Failover Recovery Timeout (sec)"),
+    _("Switch back to primary after this many seconds of healthy checks"),
+  );
+  o.depends("enable_section_failover", "1");
+  o.default = "15";
+  o.rmempty = false;
+  o.validate = function (section_id, value) {
+    if (!value) {
+      return _("Recovery timeout cannot be empty");
+    }
+    const parsed = parseInt(value);
+    if (isNaN(parsed) || parsed < 5 || parsed > 3600) {
+      return _("Recovery timeout must be a number in range 5-3600");
+    }
+    return true;
+  };
+
+  o = section.option(
+    form.Flag,
+    "failover_switch_back_to_primary",
+    _("Return To Primary Automatically"),
+    _("Automatically return to primary section when it becomes stable again"),
+  );
+  o.depends("enable_section_failover", "1");
+  o.default = "1";
+  o.rmempty = false;
+
+  o = section.option(
+    form.Flag,
     "dont_touch_dhcp",
     _("Dont Touch My DHCP!"),
     _("Podkop will not modify your DHCP configuration"),

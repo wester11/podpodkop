@@ -136,21 +136,25 @@ start_main() {
     config_foreach add_cron_job "section"
     /etc/init.d/sing-box start
 
+    start_section_failover_monitor
+
     log "Nice"
     list_update &
-    echo $! > /var/run/podkop_list_update.pid
+    echo $! > "$PODKOP_LIST_UPDATE_PID_FILE"
 }
 
 stop_main() {
     log "Stopping the podkop"
 
-    if [ -f /var/run/podkop_list_update.pid ]; then
-        pid=$(cat /var/run/podkop_list_update.pid)
+    stop_section_failover_monitor
+
+    if [ -f "$PODKOP_LIST_UPDATE_PID_FILE" ]; then
+        pid=$(cat "$PODKOP_LIST_UPDATE_PID_FILE")
         if kill -0 "$pid" 2> /dev/null; then
             kill "$pid" 2> /dev/null
             log "Stopped list_update"
         fi
-        rm -f /var/run/podkop_list_update.pid
+        rm -f "$PODKOP_LIST_UPDATE_PID_FILE"
     fi
 
     remove_cron_job
@@ -215,7 +219,14 @@ restart() {
 
 # Migrations and validation funcs
 migration() {
-    :
+    migration_add_new_option "podkop" "settings" "enable_section_failover" "0" || true
+    migration_add_new_option "podkop" "settings" "failover_primary_section" "main" || true
+    migration_add_new_option "podkop" "settings" "failover_check_url" "https://www.google.com/generate_204" || true
+    migration_add_new_option "podkop" "settings" "failover_check_interval" "5" || true
+    migration_add_new_option "podkop" "settings" "failover_fail_threshold" "30" || true
+    migration_add_new_option "podkop" "settings" "failover_recovery_threshold" "15" || true
+    migration_add_new_option "podkop" "settings" "failover_switch_back_to_primary" "1" || true
+    migration_add_new_option "podkop" "settings" "failover_active_section" "main" || true
 }
 
 validate_service() {
@@ -616,6 +627,107 @@ sing_box_configure_outbounds() {
     config=$(sing_box_cm_add_direct_outbound "$config" "$SB_DIRECT_OUTBOUND_TAG")
 
     config_foreach configure_outbound_handler "section"
+    configure_failover_selector_outbound
+}
+
+is_section_failover_enabled() {
+    local enabled
+    config_get_bool enabled "settings" "enable_section_failover" 0
+
+    [ "$enabled" -eq 1 ]
+}
+
+is_failover_target_section() {
+    local section="$1"
+    local connection_type
+
+    [ -n "$section" ] || return 1
+    connection_type="$(uci -q get "podkop.$section.connection_type" 2> /dev/null || true)"
+
+    [ "$connection_type" = "proxy" ] || [ "$connection_type" = "vpn" ]
+}
+
+get_failover_primary_section() {
+    uci -q get podkop.settings.failover_primary_section 2> /dev/null || true
+}
+
+get_failover_secondary_section() {
+    uci -q get podkop.settings.failover_secondary_section 2> /dev/null || true
+}
+
+is_failover_pair_valid() {
+    local primary_section="$1"
+    local secondary_section="$2"
+
+    [ -n "$primary_section" ] || return 1
+    [ -n "$secondary_section" ] || return 1
+    [ "$primary_section" != "$secondary_section" ] || return 1
+
+    is_failover_target_section "$primary_section" && is_failover_target_section "$secondary_section"
+}
+
+get_effective_outbound_tag_for_section() {
+    local section="$1"
+    local base_outbound_tag primary_section secondary_section
+
+    base_outbound_tag="$(get_outbound_tag_by_section "$section")"
+    if ! is_section_failover_enabled; then
+        echo "$base_outbound_tag"
+        return 0
+    fi
+
+    primary_section="$(get_failover_primary_section)"
+    secondary_section="$(get_failover_secondary_section)"
+    if ! is_failover_pair_valid "$primary_section" "$secondary_section"; then
+        echo "$base_outbound_tag"
+        return 0
+    fi
+
+    if [ "$section" = "$primary_section" ]; then
+        echo "$SB_FAILOVER_SELECTOR_OUTBOUND_TAG"
+        return 0
+    fi
+
+    echo "$base_outbound_tag"
+}
+
+configure_failover_selector_outbound() {
+    local primary_section secondary_section primary_tag secondary_tag outbounds default_section default_tag
+
+    if ! is_section_failover_enabled; then
+        return 0
+    fi
+
+    primary_section="$(get_failover_primary_section)"
+    secondary_section="$(get_failover_secondary_section)"
+    if ! is_failover_pair_valid "$primary_section" "$secondary_section"; then
+        log "Section failover is enabled but primary/secondary sections are invalid. Skip failover selector setup." "warn"
+        return 0
+    fi
+
+    primary_tag="$(get_outbound_tag_by_section "$primary_section")"
+    secondary_tag="$(get_outbound_tag_by_section "$secondary_section")"
+    outbounds="$(comma_string_to_json_array "$primary_tag,$secondary_tag")"
+
+    default_section="$(uci -q get podkop.settings.failover_active_section 2> /dev/null || true)"
+    case "$default_section" in
+    "$primary_section")
+        default_tag="$primary_tag"
+        ;;
+    "$secondary_section")
+        default_tag="$secondary_tag"
+        ;;
+    *)
+        default_tag="$primary_tag"
+        ;;
+    esac
+
+    config="$(sing_box_cm_add_selector_outbound \
+        "$config" \
+        "$SB_FAILOVER_SELECTOR_OUTBOUND_TAG" \
+        "$outbounds" \
+        "$default_tag" \
+        "true")"
 }
 
 PROXY_LINKS_BUILD_CONFIG=""
@@ -891,7 +1003,7 @@ sing_box_configure_route() {
 
     local first_outbound_section
     first_outbound_section="$(get_first_outbound_section)"
-    first_outbound_tag="$(get_outbound_tag_by_section "$first_outbound_section")"
+    first_outbound_tag="$(get_effective_outbound_tag_for_section "$first_outbound_section")"
     config=$(sing_box_cf_proxy_domain "$config" "$SB_TPROXY_INBOUND_TAG" "$CHECK_PROXY_IP_DOMAIN" "$first_outbound_tag")
     config=$(sing_box_cf_override_domain_port "$config" "$FAKEIP_TEST_DOMAIN" 8443)
 
@@ -920,7 +1032,7 @@ include_source_ips_in_routing_handler() {
         rule_tag="$(gen_id)"
         config=$(
             sing_box_cm_add_route_rule \
-                "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$(get_outbound_tag_by_section "$section")"
+                "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$(get_effective_outbound_tag_for_section "$section")"
         )
         config_list_foreach "$section" "fully_routed_ips" include_source_ip_in_routing_handler "$rule_tag"
     fi
@@ -1006,7 +1118,7 @@ configure_routing_for_section_lists() {
     case "$section_connection_type" in
     proxy | vpn)
         route_rule_tag="$(gen_id)"
-        outbound_tag=$(get_outbound_tag_by_section "$section")
+        outbound_tag=$(get_effective_outbound_tag_for_section "$section")
         config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
         ;;
     block)
@@ -1713,6 +1825,201 @@ section_has_enabled_lists() {
     else
         return 1
     fi
+}
+
+normalize_positive_int() {
+    local value="$1"
+    local default_value="$2"
+
+    case "$value" in
+    '' | *[!0-9]*)
+        echo "$default_value"
+        ;;
+    *)
+        if [ "$value" -le 0 ]; then
+            echo "$default_value"
+        else
+            echo "$value"
+        fi
+        ;;
+    esac
+}
+
+is_failover_latency_ok() {
+    local section="$1"
+    local latency_json delay section_outbound_tag
+
+    section_outbound_tag="$(get_outbound_tag_by_section "$section")"
+    latency_json="$(clash_api get_group_latency "$section_outbound_tag" 3000 2> /dev/null || true)"
+    delay="$(echo "$latency_json" | jq -r '.delay // empty' 2> /dev/null || true)"
+
+    if [ -z "$delay" ] || [ "$delay" = "0" ] || [ "$delay" = "-1" ] || [ "$delay" = "null" ]; then
+        latency_json="$(clash_api get_proxy_latency "$section_outbound_tag" 3000 2> /dev/null || true)"
+        delay="$(echo "$latency_json" | jq -r '.delay // empty' 2> /dev/null || true)"
+    fi
+
+    case "$delay" in
+    '' | *[!0-9]*)
+        return 1
+        ;;
+    *)
+        [ "$delay" -gt 0 ]
+        ;;
+    esac
+}
+
+is_failover_url_ok() {
+    local check_url="$1"
+
+    curl -kfsSL --connect-timeout 5 --max-time 8 "$check_url" > /dev/null 2>&1
+}
+
+is_failover_section_healthy() {
+    local section="$1"
+    local check_url="$2"
+
+    is_failover_latency_ok "$section" && is_failover_url_ok "$check_url"
+}
+
+set_failover_active_section() {
+    local target_section="$1"
+    local primary_section="$2"
+    local secondary_section="$3"
+    local current_section target_outbound response success
+
+    case "$target_section" in
+    "$primary_section" | "$secondary_section") ;;
+    *)
+        log "Invalid failover target section '$target_section'" "warn"
+        return 1
+        ;;
+    esac
+
+    target_outbound="$(get_outbound_tag_by_section "$target_section")"
+    response="$(clash_api set_group_proxy "$SB_FAILOVER_SELECTOR_OUTBOUND_TAG" "$target_outbound" 2> /dev/null || true)"
+    success="$(echo "$response" | jq -r '.success // false' 2> /dev/null || echo false)"
+    if [ "$success" != "true" ]; then
+        log "Failed to switch failover selector to '$target_section'" "warn"
+        return 1
+    fi
+
+    current_section="$(uci -q get podkop.settings.failover_active_section 2> /dev/null || true)"
+    if [ "$current_section" != "$target_section" ]; then
+        uci set "podkop.settings.failover_active_section=$target_section"
+        uci commit podkop
+        config_load "$PODKOP_CONFIG"
+    fi
+
+    log "Failover active section switched to '$target_section'" "warn"
+    return 0
+}
+
+section_failover_watchdog_loop() {
+    local primary_section="$1"
+    local secondary_section="$2"
+    local active_section check_url check_interval fail_threshold recovery_threshold switch_back_to_primary
+    local fail_elapsed=0 recovery_elapsed=0
+
+    check_url="$(uci -q get podkop.settings.failover_check_url 2> /dev/null || true)"
+    [ -z "$check_url" ] && check_url="https://www.google.com/generate_204"
+
+    check_interval="$(normalize_positive_int "$(uci -q get podkop.settings.failover_check_interval 2> /dev/null || true)" 5)"
+    fail_threshold="$(normalize_positive_int "$(uci -q get podkop.settings.failover_fail_threshold 2> /dev/null || true)" 30)"
+    recovery_threshold="$(normalize_positive_int "$(uci -q get podkop.settings.failover_recovery_threshold 2> /dev/null || true)" 15)"
+    switch_back_to_primary="$(uci -q get podkop.settings.failover_switch_back_to_primary 2> /dev/null || true)"
+    [ "$switch_back_to_primary" = "0" ] || switch_back_to_primary="1"
+
+    active_section="$(uci -q get podkop.settings.failover_active_section 2> /dev/null || true)"
+    case "$active_section" in
+    "$primary_section" | "$secondary_section") ;;
+    *)
+        active_section="$primary_section"
+        ;;
+    esac
+
+    log "Section failover watchdog started: primary=$primary_section secondary=$secondary_section check_url=$check_url interval=${check_interval}s fail_threshold=${fail_threshold}s"
+
+    while true; do
+        if is_failover_section_healthy "$active_section" "$check_url"; then
+            fail_elapsed=0
+
+            if [ "$active_section" = "$secondary_section" ] && [ "$switch_back_to_primary" = "1" ]; then
+                if is_failover_section_healthy "$primary_section" "$check_url"; then
+                    recovery_elapsed=$((recovery_elapsed + check_interval))
+                    if [ "$recovery_elapsed" -ge "$recovery_threshold" ]; then
+                        if set_failover_active_section "$primary_section" "$primary_section" "$secondary_section"; then
+                            active_section="$primary_section"
+                            fail_elapsed=0
+                        fi
+                        recovery_elapsed=0
+                    fi
+                else
+                    recovery_elapsed=0
+                fi
+            else
+                recovery_elapsed=0
+            fi
+        else
+            recovery_elapsed=0
+            fail_elapsed=$((fail_elapsed + check_interval))
+
+            if [ "$active_section" = "$primary_section" ] && [ "$fail_elapsed" -ge "$fail_threshold" ]; then
+                if set_failover_active_section "$secondary_section" "$primary_section" "$secondary_section"; then
+                    active_section="$secondary_section"
+                fi
+                fail_elapsed=0
+            fi
+        fi
+
+        sleep "$check_interval"
+    done
+}
+
+start_section_failover_monitor() {
+    local primary_section secondary_section active_section pid
+
+    stop_section_failover_monitor
+
+    if ! is_section_failover_enabled; then
+        return 0
+    fi
+
+    primary_section="$(get_failover_primary_section)"
+    secondary_section="$(get_failover_secondary_section)"
+    if ! is_failover_pair_valid "$primary_section" "$secondary_section"; then
+        log "Section failover is enabled but primary/secondary sections are invalid. Skip watchdog start." "warn"
+        return 0
+    fi
+
+    active_section="$(uci -q get podkop.settings.failover_active_section 2> /dev/null || true)"
+    case "$active_section" in
+    "$primary_section" | "$secondary_section") ;;
+    *)
+        active_section="$primary_section"
+        ;;
+    esac
+    set_failover_active_section "$active_section" "$primary_section" "$secondary_section" || \
+        set_failover_active_section "$primary_section" "$primary_section" "$secondary_section" || true
+
+    section_failover_watchdog_loop "$primary_section" "$secondary_section" &
+    pid=$!
+    echo "$pid" > "$PODKOP_FAILOVER_PID_FILE"
+    log "Section failover watchdog started with pid=$pid"
+}
+
+stop_section_failover_monitor() {
+    local pid
+
+    if [ ! -f "$PODKOP_FAILOVER_PID_FILE" ]; then
+        return 0
+    fi
+
+    pid="$(cat "$PODKOP_FAILOVER_PID_FILE" 2> /dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then
+        kill "$pid" 2> /dev/null || true
+        log "Stopped section failover watchdog"
+    fi
+    rm -f "$PODKOP_FAILOVER_PID_FILE"
 }
 
 get_service_listen_address() {
