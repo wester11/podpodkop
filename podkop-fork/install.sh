@@ -539,7 +539,9 @@ setup_mobile_import() {
     msg "Mobile import key (masked): $masked_key"
     msg "To get full key locally on this router: uci get podkop.settings.mobile_import_key"
     msg "Button URL template:"
-    msg "http://${lan_ip}/cgi-bin/podkop-import-subscription?key=<YOUR_ROUTER_KEY>&mode=urltest&url=<URL_ENCODED_SUBSCRIPTION>"
+    msg "http://${lan_ip}/cgi-bin/podkop-import-subscription?key=<YOUR_ROUTER_KEY>&section=main&mode=urltest&url=<URL_ENCODED_SUBSCRIPTION>"
+    msg "Alternative with base64url subscription URL:"
+    msg "http://${lan_ip}/cgi-bin/podkop-import-subscription?key=<YOUR_ROUTER_KEY>&section=main&mode=urltest&url_b64=<BASE64URL_SUBSCRIPTION>"
 }
 
 cleanup() {

@@ -444,10 +444,11 @@ dnsmasq_restore() {
 
 add_cron_job() {
     ## Future: make a check so that it doesn't recreate many times
-    local community_lists remote_domain_lists remote_subnet_lists update_interval
+    local community_lists remote_domain_lists remote_subnet_lists subscribe_url update_interval
     config_get community_lists "$section" "community_lists"
     config_get remote_domain_lists "$section" "remote_domain_lists"
     config_get remote_subnet_lists "$section" "remote_subnet_lists"
+    config_get subscribe_url "$section" "subscribe_url"
     config_get update_interval "settings" "update_interval"
 
     case "$update_interval" in
@@ -474,7 +475,8 @@ add_cron_job() {
 
     if [ -n "$community_lists" ] ||
         [ -n "$remote_domain_lists" ] ||
-        [ -n "$remote_subnet_lists" ]; then
+        [ -n "$remote_subnet_lists" ] ||
+        [ -n "$subscribe_url" ]; then
         remove_cron_job
         crontab -l | {
             cat
@@ -487,6 +489,177 @@ add_cron_job() {
 remove_cron_job() {
     (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
     log "The cron job removed"
+}
+
+SUBSCRIPTION_UPDATER_HAS_SUBSCRIPTIONS=0
+SUBSCRIPTION_UPDATER_UPDATED=0
+SUBSCRIPTION_UPDATER_FAILED=0
+SUBSCRIPTION_UPDATER_UPDATED_SECTIONS=""
+SUBSCRIPTION_UPDATER_FAILED_SECTIONS=""
+
+set_section_subscription_list() {
+    local section="$1"
+    local apply_mode="$2"
+    local urls="$3"
+    local line first_url
+
+    uci -q set "podkop.$section.connection_type=proxy"
+
+    case "$apply_mode" in
+    selector)
+        uci -q set "podkop.$section.proxy_config_type=selector"
+        uci -q delete "podkop.$section.selector_proxy_links" || true
+        uci -q delete "podkop.$section.urltest_proxy_links" || true
+        uci -q delete "podkop.$section.proxy_string" || true
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            uci -q add_list "podkop.$section.selector_proxy_links=$line"
+        done <<EOF
+$urls
+EOF
+        ;;
+    urltest)
+        uci -q set "podkop.$section.proxy_config_type=urltest"
+        uci -q delete "podkop.$section.selector_proxy_links" || true
+        uci -q delete "podkop.$section.urltest_proxy_links" || true
+        uci -q delete "podkop.$section.proxy_string" || true
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            uci -q add_list "podkop.$section.urltest_proxy_links=$line"
+        done <<EOF
+$urls
+EOF
+        ;;
+    url)
+        uci -q set "podkop.$section.proxy_config_type=url"
+        uci -q delete "podkop.$section.selector_proxy_links" || true
+        uci -q delete "podkop.$section.urltest_proxy_links" || true
+        first_url="$(echo "$urls" | sed -n '/^[[:space:]]*$/!{p;q;}')"
+        if [ -n "$first_url" ]; then
+            uci -q set "podkop.$section.proxy_string=$first_url"
+        fi
+        ;;
+    *)
+        log "Unsupported proxy_config_type '$apply_mode' for section '$section'. Skip subscription update." "warn"
+        return 1
+        ;;
+    esac
+
+    return 0
+}
+
+update_subscription_for_section() {
+    local section="$1"
+    local subscribe_url connection_type apply_mode subscribe_raw subscribe_json subscribe_error urls count
+
+    config_get subscribe_url "$section" "subscribe_url"
+    [ -n "$subscribe_url" ] || return 0
+    SUBSCRIPTION_UPDATER_HAS_SUBSCRIPTIONS=1
+
+    config_get connection_type "$section" "connection_type"
+    if [ "$connection_type" != "proxy" ]; then
+        log "Section '$section' has subscribe_url but connection_type='$connection_type'. Skip update." "warn"
+        SUBSCRIPTION_UPDATER_FAILED=1
+        SUBSCRIPTION_UPDATER_FAILED_SECTIONS="$SUBSCRIPTION_UPDATER_FAILED_SECTIONS $section"
+        return 0
+    fi
+
+    config_get apply_mode "$section" "proxy_config_type" "urltest"
+    case "$apply_mode" in
+    url | selector | urltest) ;;
+    *)
+        log "Section '$section' uses unsupported proxy_config_type '$apply_mode' for subscriptions." "warn"
+        SUBSCRIPTION_UPDATER_FAILED=1
+        SUBSCRIPTION_UPDATER_FAILED_SECTIONS="$SUBSCRIPTION_UPDATER_FAILED_SECTIONS $section"
+        return 0
+        ;;
+    esac
+
+    subscribe_raw="$(printf '%s\n' "$subscribe_url" | /www/cgi-bin/podkop-subscribe 2> /dev/null)"
+    subscribe_json="$(echo "$subscribe_raw" | sed '1,/^$/d')"
+    [ -n "$subscribe_json" ] || subscribe_json="$subscribe_raw"
+
+    if [ -z "$subscribe_json" ]; then
+        log "Subscription update failed for '$section': empty subscribe response." "error"
+        SUBSCRIPTION_UPDATER_FAILED=1
+        SUBSCRIPTION_UPDATER_FAILED_SECTIONS="$SUBSCRIPTION_UPDATER_FAILED_SECTIONS $section"
+        return 0
+    fi
+
+    subscribe_error="$(echo "$subscribe_json" | jq -r '.error // empty' 2> /dev/null || true)"
+    if [ -n "$subscribe_error" ]; then
+        log "Subscription update failed for '$section': $subscribe_error" "error"
+        SUBSCRIPTION_UPDATER_FAILED=1
+        SUBSCRIPTION_UPDATER_FAILED_SECTIONS="$SUBSCRIPTION_UPDATER_FAILED_SECTIONS $section"
+        return 0
+    fi
+
+    urls="$(echo "$subscribe_json" | jq -r '.configs[]?.url // empty' 2> /dev/null || true)"
+    count="$(echo "$urls" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+    if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+        log "Subscription update failed for '$section': no proxy configs in subscription." "error"
+        SUBSCRIPTION_UPDATER_FAILED=1
+        SUBSCRIPTION_UPDATER_FAILED_SECTIONS="$SUBSCRIPTION_UPDATER_FAILED_SECTIONS $section"
+        return 0
+    fi
+
+    if ! set_section_subscription_list "$section" "$apply_mode" "$urls"; then
+        SUBSCRIPTION_UPDATER_FAILED=1
+        SUBSCRIPTION_UPDATER_FAILED_SECTIONS="$SUBSCRIPTION_UPDATER_FAILED_SECTIONS $section"
+        return 0
+    fi
+
+    uci -q set "podkop.$section.subscribe_url=$subscribe_url"
+    SUBSCRIPTION_UPDATER_UPDATED=1
+    SUBSCRIPTION_UPDATER_UPDATED_SECTIONS="$SUBSCRIPTION_UPDATER_UPDATED_SECTIONS $section"
+    log "Subscription update succeeded for '$section' with $count config(s)." "info"
+}
+
+update_subscriptions() {
+    SUBSCRIPTION_UPDATER_HAS_SUBSCRIPTIONS=0
+    SUBSCRIPTION_UPDATER_UPDATED=0
+    SUBSCRIPTION_UPDATER_FAILED=0
+    SUBSCRIPTION_UPDATER_UPDATED_SECTIONS=""
+    SUBSCRIPTION_UPDATER_FAILED_SECTIONS=""
+
+    if [ ! -x /www/cgi-bin/podkop-subscribe ]; then
+        echolog "⚠️ Subscription updater endpoint is missing, skipping subscription refresh"
+        return 0
+    fi
+
+    config_foreach update_subscription_for_section "section"
+
+    if [ "$SUBSCRIPTION_UPDATER_HAS_SUBSCRIPTIONS" -eq 0 ]; then
+        echolog "ℹ️ No sections with subscribe_url configured"
+        return 0
+    fi
+
+    if [ "$SUBSCRIPTION_UPDATER_UPDATED" -eq 1 ]; then
+        if uci commit podkop; then
+            config_load "$PODKOP_CONFIG"
+            echolog "✅ Subscription refresh complete. Updated sections:$SUBSCRIPTION_UPDATER_UPDATED_SECTIONS"
+
+            if pgrep -f "sing-box" > /dev/null 2>&1; then
+                echolog "♻️ Applying updated subscription configs to sing-box..."
+                sing_box_init_config
+                /etc/init.d/sing-box restart > /dev/null 2>&1 || log "Failed to restart sing-box after subscription refresh" "error"
+            else
+                echolog "ℹ️ sing-box is not running, updated subscriptions will apply on next start"
+            fi
+        else
+            echolog "❌ Failed to commit updated subscriptions"
+            return 1
+        fi
+    else
+        echolog "ℹ️ Subscription refresh check completed, no section updates required"
+    fi
+
+    if [ "$SUBSCRIPTION_UPDATER_FAILED" -eq 1 ]; then
+        echolog "⚠️ Subscription refresh had errors in sections:$SUBSCRIPTION_UPDATER_FAILED_SECTIONS"
+        return 1
+    fi
+
+    return 0
 }
 
 list_update() {
@@ -520,7 +693,7 @@ list_update() {
         local service_proxy_address
         service_proxy_address="$(get_service_proxy_address)"
 
-        if [ -n "$http_proxy_address" ]; then
+        if [ -n "$service_proxy_address" ]; then
             if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
                 echolog "✅ GitHub connection check passed (via proxy)"
                 break
@@ -546,14 +719,17 @@ list_update() {
 
     echolog "📥 Downloading and processing lists..."
 
-    config_foreach import_community_subnet_lists "section"
-    config_foreach import_domains_from_remote_domain_lists "section"
-    config_foreach import_subnets_from_remote_subnet_lists "section"
+    local update_status=0
+    config_foreach import_community_subnet_lists "section" || update_status=1
+    config_foreach import_domains_from_remote_domain_lists "section" || update_status=1
+    config_foreach import_subnets_from_remote_subnet_lists "section" || update_status=1
+    update_subscriptions || update_status=1
 
-    if [ $? -eq 0 ]; then
+    if [ "$update_status" -eq 0 ]; then
         echolog "✅ Lists update completed successfully"
     else
         echolog "❌ Lists update failed"
+        return 1
     fi
 }
 
@@ -3104,6 +3280,7 @@ Available commands:
     restart                 Restart podkop service
     main                    Run main podkop process
     list_update             Update domain lists
+    update_subscriptions    Refresh proxy subscription links for all configured sections
     check_proxy             Check proxy connectivity
     check_nft               Check NFT rules
     check_nft_rules         Check NFT rules status
@@ -3143,6 +3320,9 @@ main)
     ;;
 list_update)
     list_update
+    ;;
+update_subscriptions)
+    update_subscriptions
     ;;
 check_proxy)
     check_proxy
