@@ -326,293 +326,296 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
-    form.DynamicList,
-    "community_lists",
-    _("Community Lists"),
-    _("Select a predefined list for routing") +
-      ' <a href="https://github.com/wester11/podpodkop" target="_blank">github.com/wester11/podpodkop</a>',
-  );
-  o.placeholder = "Service list";
-  Object.entries(main.DOMAIN_LIST_OPTIONS).forEach(([key, label]) => {
-    o.value(key, _(label));
-  });
-  o.rmempty = true;
-  let lastValues = [];
-  let isProcessing = false;
+  const trafficCaptureMode = uci.get("podkop", "settings", "traffic_capture_mode") || "tun";
+  if (trafficCaptureMode !== "tun") {
+    o = section.option(
+      form.DynamicList,
+      "community_lists",
+      _("Community Lists"),
+      _("Select a predefined list for routing") +
+        ' <a href="https://github.com/wester11/podpodkop" target="_blank">github.com/wester11/podpodkop</a>',
+    );
+    o.placeholder = "Service list";
+    Object.entries(main.DOMAIN_LIST_OPTIONS).forEach(([key, label]) => {
+      o.value(key, _(label));
+    });
+    o.rmempty = true;
+    let lastValues = [];
+    let isProcessing = false;
 
-  o.onchange = function (ev, section_id, value) {
-    if (isProcessing) return;
-    isProcessing = true;
+    o.onchange = function (ev, section_id, value) {
+      if (isProcessing) return;
+      isProcessing = true;
 
-    try {
-      const values = Array.isArray(value) ? value : [value];
-      let newValues = [...values];
-      let notifications = [];
+      try {
+        const values = Array.isArray(value) ? value : [value];
+        let newValues = [...values];
+        let notifications = [];
 
-      const selectedRegionalOptions = main.REGIONAL_OPTIONS.filter((opt) =>
-        newValues.includes(opt),
-      );
-
-      if (selectedRegionalOptions.length > 1) {
-        const lastSelected =
-          selectedRegionalOptions[selectedRegionalOptions.length - 1];
-        const removedRegions = selectedRegionalOptions.slice(0, -1);
-        newValues = newValues.filter(
-          (v) => v === lastSelected || !main.REGIONAL_OPTIONS.includes(v),
+        const selectedRegionalOptions = main.REGIONAL_OPTIONS.filter((opt) =>
+          newValues.includes(opt),
         );
-        notifications.push(
-          E("p", {}, [
-            E("strong", {}, _("Regional options cannot be used together")),
-            E("br"),
-            _(
-              "Warning: %s cannot be used together with %s. Previous selections have been removed.",
-            ).format(removedRegions.join(", "), lastSelected),
-          ]),
-        );
-      }
 
-      if (newValues.includes("russia_inside")) {
-        const removedServices = newValues.filter(
-          (v) => !main.ALLOWED_WITH_RUSSIA_INSIDE.includes(v),
-        );
-        if (removedServices.length > 0) {
-          newValues = newValues.filter((v) =>
-            main.ALLOWED_WITH_RUSSIA_INSIDE.includes(v),
+        if (selectedRegionalOptions.length > 1) {
+          const lastSelected =
+            selectedRegionalOptions[selectedRegionalOptions.length - 1];
+          const removedRegions = selectedRegionalOptions.slice(0, -1);
+          newValues = newValues.filter(
+            (v) => v === lastSelected || !main.REGIONAL_OPTIONS.includes(v),
           );
           notifications.push(
-            E("p", { class: "alert-message warning" }, [
-              E("strong", {}, _("Russia inside restrictions")),
+            E("p", {}, [
+              E("strong", {}, _("Regional options cannot be used together")),
               E("br"),
               _(
-                "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection.",
-              ).format(
-                main.ALLOWED_WITH_RUSSIA_INSIDE.map(
-                  (key) => main.DOMAIN_LIST_OPTIONS[key],
-                )
-                  .filter((label) => label !== "Russia inside")
-                  .join(", "),
-                removedServices.join(", "),
-              ),
+                "Warning: %s cannot be used together with %s. Previous selections have been removed.",
+              ).format(removedRegions.join(", "), lastSelected),
             ]),
           );
         }
+
+        if (newValues.includes("russia_inside")) {
+          const removedServices = newValues.filter(
+            (v) => !main.ALLOWED_WITH_RUSSIA_INSIDE.includes(v),
+          );
+          if (removedServices.length > 0) {
+            newValues = newValues.filter((v) =>
+              main.ALLOWED_WITH_RUSSIA_INSIDE.includes(v),
+            );
+            notifications.push(
+              E("p", { class: "alert-message warning" }, [
+                E("strong", {}, _("Russia inside restrictions")),
+                E("br"),
+                _(
+                  "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection.",
+                ).format(
+                  main.ALLOWED_WITH_RUSSIA_INSIDE.map(
+                    (key) => main.DOMAIN_LIST_OPTIONS[key],
+                  )
+                    .filter((label) => label !== "Russia inside")
+                    .join(", "),
+                  removedServices.join(", "),
+                ),
+              ]),
+            );
+          }
+        }
+
+        if (JSON.stringify(newValues.sort()) !== JSON.stringify(values.sort())) {
+          this.getUIElement(section_id).setValue(newValues);
+        }
+
+        notifications.forEach((notification) =>
+          ui.addNotification(null, notification),
+        );
+        lastValues = newValues;
+      } catch (e) {
+        console.error("Error in onchange handler:", e);
+      } finally {
+        isProcessing = false;
       }
+    };
 
-      if (JSON.stringify(newValues.sort()) !== JSON.stringify(values.sort())) {
-        this.getUIElement(section_id).setValue(newValues);
-      }
-
-      notifications.forEach((notification) =>
-        ui.addNotification(null, notification),
-      );
-      lastValues = newValues;
-    } catch (e) {
-      console.error("Error in onchange handler:", e);
-    } finally {
-      isProcessing = false;
-    }
-  };
-
-  o = section.option(
-    form.TextValue,
-    "user_domains_text",
-    _("User Domains"),
-    _(
-      "Enter domain names separated by commas, spaces, or newlines. You can add comments using //",
-    ),
-  );
-  o.placeholder =
-    "example.com, sub.example.com\n// Social networks\ndomain.com test.com // personal domains";
-  o.rows = 8;
-  o.rmempty = true;
-  o.validate = function (section_id, value) {
-    // Optional
-    if (!value || value.length === 0) {
-      return true;
-    }
-
-    const domains = main.parseValueList(value);
-
-    if (!domains.length) {
-      return _(
-        "At least one valid domain must be specified. Comments-only content is not allowed.",
-      );
-    }
-
-    const { valid, results } = main.bulkValidate(domains, (row) =>
-      main.validateDomain(row, true),
+    o = section.option(
+      form.TextValue,
+      "user_domains_text",
+      _("User Domains"),
+      _(
+        "Enter domain names separated by commas, spaces, or newlines. You can add comments using //",
+      ),
     );
+    o.placeholder =
+      "example.com, sub.example.com\n// Social networks\ndomain.com test.com // personal domains";
+    o.rows = 8;
+    o.rmempty = true;
+    o.validate = function (section_id, value) {
+      // Optional
+      if (!value || value.length === 0) {
+        return true;
+      }
 
-    if (!valid) {
-      const errors = results
-        .filter((validation) => !validation.valid) // Leave only failed validations
-        .map((validation) => `${validation.value}: ${validation.message}`); // Collect validation errors
+      const domains = main.parseValueList(value);
 
-      return [_("Validation errors:"), ...errors].join("\n");
-    }
+      if (!domains.length) {
+        return _(
+          "At least one valid domain must be specified. Comments-only content is not allowed.",
+        );
+      }
 
-    return true;
-  };
-
-  o = section.option(
-    form.TextValue,
-    "user_subnets_text",
-    _("User Subnets"),
-    _(
-      "Enter subnets in CIDR notation or single IP addresses, separated by commas, spaces, or newlines. " +
-        "You can add comments using //",
-    ),
-  );
-  o.placeholder =
-    "103.21.244.0/22\n// Google DNS\n8.8.8.8\n1.1.1.1/32, 9.9.9.9 // Cloudflare and Quad9";
-  o.rows = 10;
-  o.rmempty = true;
-  o.validate = function (section_id, value) {
-    // Optional
-    if (!value || value.length === 0) {
-      return true;
-    }
-
-    const subnets = main.parseValueList(value);
-
-    if (!subnets.length) {
-      return _(
-        "At least one valid subnet or IP must be specified. Comments-only content is not allowed.",
+      const { valid, results } = main.bulkValidate(domains, (row) =>
+        main.validateDomain(row, true),
       );
-    }
 
-    const { valid, results } = main.bulkValidate(subnets, main.validateSubnet);
+      if (!valid) {
+        const errors = results
+          .filter((validation) => !validation.valid) // Leave only failed validations
+          .map((validation) => `${validation.value}: ${validation.message}`); // Collect validation errors
 
-    if (!valid) {
-      const errors = results
-        .filter((validation) => !validation.valid) // Leave only failed validations
-        .map((validation) => `${validation.value}: ${validation.message}`); // Collect validation errors
+        return [_("Validation errors:"), ...errors].join("\n");
+      }
 
-      return [_("Validation errors:"), ...errors].join("\n");
-    }
-
-    return true;
-  };
-
-  o = section.option(
-    form.DynamicList,
-    "local_domain_lists",
-    _("Local Domain Lists"),
-    _("Specify the path to the list file located on the router filesystem"),
-  );
-  o.placeholder = "/path/file.lst";
-  o.rmempty = true;
-  o.validate = function (section_id, value) {
-    // Optional
-    if (!value || value.length === 0) {
       return true;
-    }
+    };
 
-    const validation = main.validatePath(value);
+    o = section.option(
+      form.TextValue,
+      "user_subnets_text",
+      _("User Subnets"),
+      _(
+        "Enter subnets in CIDR notation or single IP addresses, separated by commas, spaces, or newlines. " +
+          "You can add comments using //",
+      ),
+    );
+    o.placeholder =
+      "103.21.244.0/22\n// Google DNS\n8.8.8.8\n1.1.1.1/32, 9.9.9.9 // Cloudflare and Quad9";
+    o.rows = 10;
+    o.rmempty = true;
+    o.validate = function (section_id, value) {
+      // Optional
+      if (!value || value.length === 0) {
+        return true;
+      }
 
-    if (validation.valid) {
+      const subnets = main.parseValueList(value);
+
+      if (!subnets.length) {
+        return _(
+          "At least one valid subnet or IP must be specified. Comments-only content is not allowed.",
+        );
+      }
+
+      const { valid, results } = main.bulkValidate(subnets, main.validateSubnet);
+
+      if (!valid) {
+        const errors = results
+          .filter((validation) => !validation.valid) // Leave only failed validations
+          .map((validation) => `${validation.value}: ${validation.message}`); // Collect validation errors
+
+        return [_("Validation errors:"), ...errors].join("\n");
+      }
+
       return true;
-    }
+    };
 
-    return validation.message;
-  };
+    o = section.option(
+      form.DynamicList,
+      "local_domain_lists",
+      _("Local Domain Lists"),
+      _("Specify the path to the list file located on the router filesystem"),
+    );
+    o.placeholder = "/path/file.lst";
+    o.rmempty = true;
+    o.validate = function (section_id, value) {
+      // Optional
+      if (!value || value.length === 0) {
+        return true;
+      }
 
-  o = section.option(
-    form.DynamicList,
-    "local_subnet_lists",
-    _("Local Subnet Lists"),
-    _("Specify the path to the list file located on the router filesystem"),
-  );
-  o.placeholder = "/path/file.lst";
-  o.rmempty = true;
-  o.validate = function (section_id, value) {
-    // Optional
-    if (!value || value.length === 0) {
-      return true;
-    }
+      const validation = main.validatePath(value);
 
-    const validation = main.validatePath(value);
+      if (validation.valid) {
+        return true;
+      }
 
-    if (validation.valid) {
-      return true;
-    }
+      return validation.message;
+    };
 
-    return validation.message;
-  };
+    o = section.option(
+      form.DynamicList,
+      "local_subnet_lists",
+      _("Local Subnet Lists"),
+      _("Specify the path to the list file located on the router filesystem"),
+    );
+    o.placeholder = "/path/file.lst";
+    o.rmempty = true;
+    o.validate = function (section_id, value) {
+      // Optional
+      if (!value || value.length === 0) {
+        return true;
+      }
 
-  o = section.option(
-    form.DynamicList,
-    "remote_domain_lists",
-    _("Remote Domain Lists"),
-    _("Specify remote URLs to download and use domain lists"),
-  );
-  o.placeholder = "https://example.com/domains.srs";
-  o.rmempty = true;
-  o.validate = function (section_id, value) {
-    // Optional
-    if (!value || value.length === 0) {
-      return true;
-    }
+      const validation = main.validatePath(value);
 
-    const validation = main.validateUrl(value);
+      if (validation.valid) {
+        return true;
+      }
 
-    if (validation.valid) {
-      return true;
-    }
+      return validation.message;
+    };
 
-    return validation.message;
-  };
+    o = section.option(
+      form.DynamicList,
+      "remote_domain_lists",
+      _("Remote Domain Lists"),
+      _("Specify remote URLs to download and use domain lists"),
+    );
+    o.placeholder = "https://example.com/domains.srs";
+    o.rmempty = true;
+    o.validate = function (section_id, value) {
+      // Optional
+      if (!value || value.length === 0) {
+        return true;
+      }
 
-  o = section.option(
-    form.DynamicList,
-    "remote_subnet_lists",
-    _("Remote Subnet Lists"),
-    _("Specify remote URLs to download and use subnet lists"),
-  );
-  o.placeholder = "https://example.com/subnets.srs";
-  o.rmempty = true;
-  o.validate = function (section_id, value) {
-    // Optional
-    if (!value || value.length === 0) {
-      return true;
-    }
+      const validation = main.validateUrl(value);
 
-    const validation = main.validateUrl(value);
+      if (validation.valid) {
+        return true;
+      }
 
-    if (validation.valid) {
-      return true;
-    }
+      return validation.message;
+    };
 
-    return validation.message;
-  };
+    o = section.option(
+      form.DynamicList,
+      "remote_subnet_lists",
+      _("Remote Subnet Lists"),
+      _("Specify remote URLs to download and use subnet lists"),
+    );
+    o.placeholder = "https://example.com/subnets.srs";
+    o.rmempty = true;
+    o.validate = function (section_id, value) {
+      // Optional
+      if (!value || value.length === 0) {
+        return true;
+      }
 
-  o = section.option(
-    form.DynamicList,
-    "fully_routed_ips",
-    _("Fully Routed IPs"),
-    _(
-      "Specify local IP addresses or subnets whose traffic will always be routed through the configured route",
-    ),
-  );
-  o.placeholder = "192.168.1.2 or 192.168.1.0/24";
-  o.rmempty = true;
-  o.depends("connection_type", "proxy");
-  o.depends("connection_type", "vpn");
-  o.validate = function (section_id, value) {
-    // Optional
-    if (!value || value.length === 0) {
-      return true;
-    }
+      const validation = main.validateUrl(value);
 
-    const validation = main.validateSubnet(value);
+      if (validation.valid) {
+        return true;
+      }
 
-    if (validation.valid) {
-      return true;
-    }
+      return validation.message;
+    };
 
-    return validation.message;
-  };
+    o = section.option(
+      form.DynamicList,
+      "fully_routed_ips",
+      _("Fully Routed IPs"),
+      _(
+        "Specify local IP addresses or subnets whose traffic will always be routed through the configured route",
+      ),
+    );
+    o.placeholder = "192.168.1.2 or 192.168.1.0/24";
+    o.rmempty = true;
+    o.depends("connection_type", "proxy");
+    o.depends("connection_type", "vpn");
+    o.validate = function (section_id, value) {
+      // Optional
+      if (!value || value.length === 0) {
+        return true;
+      }
+
+      const validation = main.validateSubnet(value);
+
+      if (validation.valid) {
+        return true;
+      }
+
+      return validation.message;
+    };
+  }
 
   o = section.option(
     form.Flag,

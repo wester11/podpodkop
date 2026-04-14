@@ -107,6 +107,50 @@ has_outbound_section() {
     return $section_exists
 }
 
+get_traffic_capture_mode() {
+    local mode
+    config_get mode "settings" "traffic_capture_mode" "tun"
+
+    # This fork currently supports TUN mode only.
+    if [ "$mode" != "tun" ]; then
+        log "Only 'tun' traffic capture mode is supported in this build. Forcing tun." "warn"
+        mode="tun"
+    fi
+
+    echo "$mode"
+}
+
+is_tun_capture_mode() {
+    [ "$(get_traffic_capture_mode)" = "tun" ]
+}
+
+get_traffic_inbound_tag() {
+    # Keep helper for readability and future extension.
+    echo "$SB_TUN_INBOUND_TAG"
+}
+
+setup_traffic_capture() {
+    if is_tun_capture_mode; then
+        log "Traffic capture mode: tun (nft/tproxy hooks are skipped)"
+        if nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
+            log "Removing stale nft table from previous tproxy run" "debug"
+            nft delete table inet "$NFT_TABLE_NAME"
+        fi
+        if ip rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
+            log "Removing stale tproxy fwmark rule" "debug"
+            ip -4 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
+        fi
+        if ip route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
+            log "Flushing stale tproxy route table" "debug"
+            ip route flush table "$RT_TABLE_NAME"
+        fi
+        return 0
+    fi
+
+    route_table_rule_mark
+    create_nft_rules
+}
+
 start_main() {
     log "Starting podkop"
 
@@ -127,8 +171,7 @@ start_main() {
     mkdir -p "$TMP_RULESET_FOLDER"
 
     # base
-    route_table_rule_mark
-    create_nft_rules
+    setup_traffic_capture
     sing_box_configure_service
 
     # sing-box
@@ -219,6 +262,7 @@ restart() {
 
 # Migrations and validation funcs
 migration() {
+    migration_add_new_option "podkop" "settings" "traffic_capture_mode" "tun" || true
     migration_add_new_option "podkop" "settings" "enable_section_failover" "0" || true
     migration_add_new_option "podkop" "settings" "failover_primary_section" "main" || true
     migration_add_new_option "podkop" "settings" "failover_check_url" "https://www.google.com/generate_204" || true
@@ -720,9 +764,15 @@ list_update() {
     echolog "📥 Downloading and processing lists..."
 
     local update_status=0
-    config_foreach import_community_subnet_lists "section" || update_status=1
-    config_foreach import_domains_from_remote_domain_lists "section" || update_status=1
-    config_foreach import_subnets_from_remote_subnet_lists "section" || update_status=1
+
+    if is_tun_capture_mode; then
+        echolog "ℹ️ TUN full-tunnel mode: list/whitelist imports are skipped"
+    else
+        config_foreach import_community_subnet_lists "section" || update_status=1
+        config_foreach import_domains_from_remote_domain_lists "section" || update_status=1
+        config_foreach import_subnets_from_remote_subnet_lists "section" || update_status=1
+    fi
+
     update_subscriptions || update_status=1
 
     if [ "$update_status" -eq 0 ]; then
@@ -788,10 +838,25 @@ sing_box_configure_log() {
 sing_box_configure_inbounds() {
     log "Configure the inbounds section of a sing-box JSON configuration"
 
-    config=$(
-        sing_box_cm_add_tproxy_inbound \
-            "$config" "$SB_TPROXY_INBOUND_TAG" "$SB_TPROXY_INBOUND_ADDRESS" "$SB_TPROXY_INBOUND_PORT" true true
-    )
+    if is_tun_capture_mode; then
+        config=$(
+            sing_box_cm_add_tun_inbound \
+                "$config" \
+                "$SB_TUN_INBOUND_TAG" \
+                "$SB_TUN_INBOUND_INTERFACE" \
+                "$SB_TUN_INBOUND_ADDRESS" \
+                "$SB_TUN_INBOUND_MTU" \
+                true \
+                true \
+                "$SB_TUN_INBOUND_STACK"
+        )
+    else
+        config=$(
+            sing_box_cm_add_tproxy_inbound \
+                "$config" "$SB_TPROXY_INBOUND_TAG" "$SB_TPROXY_INBOUND_ADDRESS" "$SB_TPROXY_INBOUND_PORT" true true
+        )
+    fi
+
     config=$(
         sing_box_cm_add_direct_inbound "$config" "$SB_DNS_INBOUND_TAG" "$SB_DNS_INBOUND_ADDRESS" "$SB_DNS_INBOUND_PORT"
     )
@@ -1156,17 +1221,27 @@ sing_box_configure_dns() {
 sing_box_configure_route() {
     log "Configure the route section of a sing-box JSON configuration"
 
-    local output_network_interface
+    local output_network_interface traffic_inbound_tag first_outbound_section first_outbound_tag final_outbound_tag
+    traffic_inbound_tag="$(get_traffic_inbound_tag)"
+    first_outbound_section="$(get_first_outbound_section)"
+    first_outbound_tag="$(get_effective_outbound_tag_for_section "$first_outbound_section")"
+
+    if is_tun_capture_mode; then
+        final_outbound_tag="$first_outbound_tag"
+    else
+        final_outbound_tag="$SB_DIRECT_OUTBOUND_TAG"
+    fi
+
     config_get output_network_interface "settings" "output_network_interface"
     if [ -z "$output_network_interface" ]; then
-        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" true "$SB_DNS_SERVER_TAG")
+        config=$(sing_box_cm_configure_route "$config" "$final_outbound_tag" true "$SB_DNS_SERVER_TAG")
     else
-        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" false "$SB_DNS_SERVER_TAG" \
+        config=$(sing_box_cm_configure_route "$config" "$final_outbound_tag" false "$SB_DNS_SERVER_TAG" \
             "$output_network_interface")
     fi
 
     local sniff_inbounds
-    sniff_inbounds=$(comma_string_to_json_array "$SB_TPROXY_INBOUND_TAG,$SB_DNS_INBOUND_TAG")
+    sniff_inbounds=$(comma_string_to_json_array "$traffic_inbound_tag,$SB_DNS_INBOUND_TAG")
     config=$(sing_box_cm_sniff_route_rule "$config" "inbound" "$sniff_inbounds")
 
     config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "protocol" "dns")
@@ -1174,14 +1249,20 @@ sing_box_configure_route() {
     local disable_quic
     config_get_bool disable_quic "settings" "disable_quic" 0
     if [ "$disable_quic" -eq 1 ]; then
-        config=$(sing_box_cf_add_single_key_reject_rule "$config" "$SB_TPROXY_INBOUND_TAG" "protocol" "quic")
+        config=$(sing_box_cf_add_single_key_reject_rule "$config" "$traffic_inbound_tag" "protocol" "quic")
     fi
 
-    local first_outbound_section
-    first_outbound_section="$(get_first_outbound_section)"
-    first_outbound_tag="$(get_effective_outbound_tag_for_section "$first_outbound_section")"
-    config=$(sing_box_cf_proxy_domain "$config" "$SB_TPROXY_INBOUND_TAG" "$CHECK_PROXY_IP_DOMAIN" "$first_outbound_tag")
+    config=$(sing_box_cf_proxy_domain "$config" "$traffic_inbound_tag" "$CHECK_PROXY_IP_DOMAIN" "$first_outbound_tag")
     config=$(sing_box_cf_override_domain_port "$config" "$FAKEIP_TEST_DOMAIN" 8443)
+
+    if is_tun_capture_mode; then
+        local private_rule_tag
+        private_rule_tag="$(gen_id)"
+        config=$(sing_box_cm_add_route_rule "$config" "$private_rule_tag" "$traffic_inbound_tag" "$SB_DIRECT_OUTBOUND_TAG")
+        config=$(sing_box_cm_patch_route_rule "$config" "$private_rule_tag" "ip_is_private" true)
+        log "TUN full-tunnel mode is enabled: list/whitelist routing rules are skipped."
+        return 0
+    fi
 
     configure_common_reject_route_rule
     configure_common_direct_route_rule
@@ -1190,7 +1271,7 @@ sing_box_configure_route() {
     config_get routing_excluded_ips "settings" "routing_excluded_ips"
     if [ -n "$routing_excluded_ips" ]; then
         rule_tag="$(gen_id)"
-        config=$(sing_box_cm_add_route_rule "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$SB_DIRECT_OUTBOUND_TAG")
+        config=$(sing_box_cm_add_route_rule "$config" "$rule_tag" "$traffic_inbound_tag" "$SB_DIRECT_OUTBOUND_TAG")
         config_list_foreach "settings" "routing_excluded_ips" exclude_source_ip_from_routing_handler "$rule_tag"
     fi
 
@@ -1201,6 +1282,8 @@ sing_box_configure_route() {
 
 include_source_ips_in_routing_handler() {
     local section="$1"
+    local traffic_inbound_tag
+    traffic_inbound_tag="$(get_traffic_inbound_tag)"
 
     local fully_routed_ips rule_tag
     config_get fully_routed_ips "$section" "fully_routed_ips"
@@ -1208,7 +1291,7 @@ include_source_ips_in_routing_handler() {
         rule_tag="$(gen_id)"
         config=$(
             sing_box_cm_add_route_rule \
-                "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$(get_effective_outbound_tag_for_section "$section")"
+                "$config" "$rule_tag" "$traffic_inbound_tag" "$(get_effective_outbound_tag_for_section "$section")"
         )
         config_list_foreach "$section" "fully_routed_ips" include_source_ip_in_routing_handler "$rule_tag"
     fi
@@ -1216,6 +1299,8 @@ include_source_ips_in_routing_handler() {
 
 configure_common_reject_route_rule() {
     local block_sections block_section_lists_enabled
+    local traffic_inbound_tag
+    traffic_inbound_tag="$(get_traffic_inbound_tag)"
     block_sections="$(get_sections_by_connection_type "block")"
     block_section_lists_enabled=0
 
@@ -1227,7 +1312,7 @@ configure_common_reject_route_rule() {
             fi
         done
         if [ "$block_section_lists_enabled" -eq 1 ]; then
-            config=$(sing_box_cm_add_reject_route_rule "$config" "$SB_REJECT_RULE_TAG" "$SB_TPROXY_INBOUND_TAG")
+            config=$(sing_box_cm_add_reject_route_rule "$config" "$SB_REJECT_RULE_TAG" "$traffic_inbound_tag")
         else
             log "Block sections does not have any enabled list, reject rule is not required" "warn"
         fi
@@ -1236,6 +1321,8 @@ configure_common_reject_route_rule() {
 
 configure_common_direct_route_rule() {
     local exclusion_sections exclusion_section_list_enabled
+    local traffic_inbound_tag
+    traffic_inbound_tag="$(get_traffic_inbound_tag)"
     exclusion_sections="$(get_sections_by_connection_type "exclusion")"
     exclusion_section_list_enabled=0
 
@@ -1247,7 +1334,7 @@ configure_common_direct_route_rule() {
             fi
         done
         if [ "$exclusion_section_list_enabled" -eq 1 ]; then
-            config=$(sing_box_cm_add_route_rule "$config" "$SB_EXCLUSION_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" \
+            config=$(sing_box_cm_add_route_rule "$config" "$SB_EXCLUSION_RULE_TAG" "$traffic_inbound_tag" \
                 "$SB_DIRECT_OUTBOUND_TAG")
         else
             log "Exclusion sections does not have any enabled list, route rule is not required" "warn"
@@ -1271,6 +1358,8 @@ exclude_source_ip_from_routing_handler() {
 
 configure_routing_for_section_lists() {
     local section="$1"
+    local traffic_inbound_tag
+    traffic_inbound_tag="$(get_traffic_inbound_tag)"
 
     log "Configuring routing for '$section' section"
     if ! section_has_enabled_lists "$section"; then
@@ -1295,7 +1384,7 @@ configure_routing_for_section_lists() {
     proxy | vpn)
         route_rule_tag="$(gen_id)"
         outbound_tag=$(get_effective_outbound_tag_for_section "$section")
-        config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
+        config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$traffic_inbound_tag" "$outbound_tag")
         ;;
     block)
         route_rule_tag="$SB_REJECT_RULE_TAG"

@@ -367,6 +367,54 @@ sing_box_cm_add_tproxy_inbound() {
 }
 
 #######################################
+# Add a TUN inbound to the inbounds section of a sing-box JSON configuration.
+# Arguments:
+#   config: string (JSON), sing-box configuration to modify
+#   tag: string, identifier for the inbound
+#   interface_name: string, tun interface name
+#   address: string, CIDR address assigned to tun interface
+#   mtu: integer, tun MTU
+#   auto_route: boolean, enable or disable automatic routing
+#   strict_route: boolean, enable or disable strict routing
+#   stack: string, network stack type ("mixed", "gvisor", "system")
+# Outputs:
+#   Writes updated JSON configuration to stdout
+# Example:
+#   CONFIG=$(sing_box_cm_add_tun_inbound "$CONFIG" "tun-in" "podkop0" "172.19.0.1/30" 1500 true true "mixed")
+#######################################
+sing_box_cm_add_tun_inbound() {
+    local config="$1"
+    local tag="$2"
+    local interface_name="$3"
+    local address="$4"
+    local mtu="$5"
+    local auto_route="$6"
+    local strict_route="$7"
+    local stack="$8"
+
+    echo "$config" | jq \
+        --arg tag "$tag" \
+        --arg interface_name "$interface_name" \
+        --arg address "$address" \
+        --argjson mtu "$mtu" \
+        --argjson auto_route "$auto_route" \
+        --argjson strict_route "$strict_route" \
+        --arg stack "$stack" \
+        '.inbounds += [(
+            {
+                type: "tun",
+                tag: $tag,
+                interface_name: $interface_name,
+                address: [$address],
+                mtu: $mtu,
+                auto_route: $auto_route,
+                strict_route: $strict_route
+            }
+            + (if $stack != "" then {stack: $stack} else {} end)
+        )]'
+}
+
+#######################################
 # Add a Direct inbound to the inbounds section of a sing-box JSON configuration.
 # Arguments:
 #   config: string (JSON), sing-box configuration to modify
