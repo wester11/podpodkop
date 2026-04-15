@@ -29,6 +29,7 @@ COUNT=3
 FETCH_TIMEOUT=20
 FETCH_CONNECT_TIMEOUT=10
 PODKOP_KEY="${PODKOP_KEY:-}"
+PODKOP_VLESS_URL="${PODKOP_VLESS_URL:-}"
 
 PKG_IS_APK=0
 command -v apk >/dev/null 2>&1 && PKG_IS_APK=1
@@ -464,47 +465,86 @@ apply_custom_lists() {
     msg "List setup step completed."
 }
 
-set_urltest_default_mode() {
-    local existing_urltest existing_selector existing_proxy
+trim_string() {
+    echo "$1" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+is_supported_proxy_url() {
+    case "$1" in
+        vless://*|ss://*|trojan://*|hy2://*|hysteria2://*|socks4://*|socks4a://*|socks5://*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+configure_tun_quickstart() {
+    local applied_url
 
     if ! command -v uci >/dev/null 2>&1; then
-        warn "uci not found, skip URLTest default mode setup."
+        warn "uci not found, skip TUN quick setup."
         return
     fi
 
     if ! uci -q show podkop.main >/dev/null 2>&1; then
-        warn "podkop.main section not found, skip URLTest default mode setup."
+        warn "podkop.main section not found, skip TUN quick setup."
         return
     fi
 
-    existing_urltest="$(uci -q get podkop.main.urltest_proxy_links 2>/dev/null || true)"
-    existing_selector="$(uci -q get podkop.main.selector_proxy_links 2>/dev/null || true)"
-    existing_proxy="$(uci -q get podkop.main.proxy_string 2>/dev/null || true)"
+    PODKOP_VLESS_URL="$(trim_string "$PODKOP_VLESS_URL")"
 
-    if [ -z "$existing_urltest" ]; then
-        if [ -n "$existing_selector" ]; then
-            while IFS= read -r link; do
-                [ -n "$link" ] || continue
-                uci -q add_list podkop.main.urltest_proxy_links="$link"
-            done <<EOF
-$existing_selector
-EOF
-            msg "Migrated selector links to URLTest list"
-        elif [ -n "$existing_proxy" ]; then
-            uci -q add_list podkop.main.urltest_proxy_links="$existing_proxy"
-            msg "Migrated proxy_string to URLTest list"
-        fi
+    if [ -n "$PODKOP_VLESS_URL" ] && ! is_supported_proxy_url "$PODKOP_VLESS_URL"; then
+        err "Unsupported proxy URL format: $PODKOP_VLESS_URL"
+        err "Supported schemes: vless:// ss:// trojan:// hy2:// hysteria2:// socks4:// socks4a:// socks5://"
+        exit 1
     fi
 
-    existing_urltest="$(uci -q get podkop.main.urltest_proxy_links 2>/dev/null || true)"
+    applied_url="$PODKOP_VLESS_URL"
+
+    # Force simplified TUN full-tunnel mode.
+    uci -q set podkop.settings.traffic_capture_mode='tun'
+    uci -q set podkop.settings.enable_section_failover='0'
+    uci -q delete podkop.settings.failover_secondary_section || true
+    uci -q delete podkop.settings.routing_excluded_ips || true
+
     uci -q set podkop.main.connection_type='proxy'
-    if [ -n "$existing_urltest" ]; then
-        uci -q set podkop.main.proxy_config_type='urltest'
-        msg "Default main mode set: Configuration Type = URLTest"
-    else
-        warn "No proxy links found, keep current proxy_config_type to avoid startup failure."
+    uci -q set podkop.main.proxy_config_type='url'
+    if [ -n "$applied_url" ]; then
+        uci -q set podkop.main.proxy_string="$applied_url"
     fi
+    uci -q delete podkop.main.selector_proxy_links || true
+    uci -q delete podkop.main.urltest_proxy_links || true
+    uci -q delete podkop.main.outbound_json || true
+
+    # Remove list/whitelist-like routing complexity for quick start.
+    uci -q delete podkop.main.community_lists || true
+    uci -q delete podkop.main.user_domains_text || true
+    uci -q delete podkop.main.user_subnets_text || true
+    uci -q delete podkop.main.user_domains || true
+    uci -q delete podkop.main.user_subnets || true
+    uci -q delete podkop.main.local_domain_lists || true
+    uci -q delete podkop.main.local_subnet_lists || true
+    uci -q delete podkop.main.remote_domain_lists || true
+    uci -q delete podkop.main.remote_subnet_lists || true
+    uci -q delete podkop.main.fully_routed_ips || true
+
     uci commit podkop
+    if [ -n "$applied_url" ]; then
+        msg "Applied quick TUN config with your proxy URL."
+    else
+        msg "Applied quick TUN config (URL can be added later in LuCI)."
+    fi
+
+    /etc/init.d/podkop restart >/dev/null 2>&1 || /etc/init.d/podkop start >/dev/null 2>&1 || true
+    sleep 1
+
+    if ip link show podkop0 >/dev/null 2>&1; then
+        msg "TUN interface podkop0 is up."
+    else
+        warn "TUN interface podkop0 not found yet. Check logs: logread -e podkop"
+    fi
 }
 
 setup_mobile_import() {
@@ -567,6 +607,10 @@ main() {
                 shift
                 PODKOP_RELEASE_TAG="${1:-}"
                 ;;
+            --vless-url)
+                shift
+                PODKOP_VLESS_URL="${1:-}"
+                ;;
         esac
         shift || true
     done
@@ -589,7 +633,7 @@ main() {
     refresh_luci_cache
     reset_old_config_if_needed
     apply_custom_lists
-    set_urltest_default_mode
+    configure_tun_quickstart
     setup_mobile_import
     print_finish
 }

@@ -1,5 +1,13 @@
 #!/bin/sh
 # shellcheck shell=dash
 
-# One-command installer wrapper
-sh <(wget -O - https://raw.githubusercontent.com/wester11/podpodkop/main/podkop-fork/install.sh)
+set -eu
+
+INSTALL_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/podkop-fork/install.sh"
+
+# One-command installer wrapper compatible with OpenWrt ash.
+if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$INSTALL_URL" | sh -s -- "$@"
+else
+    wget -O - "$INSTALL_URL" | sh -s -- "$@"
+fi
