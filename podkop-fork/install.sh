@@ -450,19 +450,17 @@ apply_custom_lists() {
         return
     fi
 
-    # Clean previous remote lists in main, then add yours.
-    uci -q delete podkop.main.remote_domain_lists || true
-    uci -q delete podkop.main.remote_subnet_lists || true
-    uci -q delete podkop.main.community_lists || true
-
     if [ -n "$PODKOP_KEY" ]; then
+        # Key mode: replace current auto-routed lists with key payload.
+        uci -q delete podkop.main.remote_domain_lists || true
+        uci -q delete podkop.main.remote_subnet_lists || true
+        uci -q delete podkop.main.community_lists || true
         apply_selected_lists_from_key
+        uci commit podkop
+        msg "List setup step completed."
     else
-        msg "No key provided: skip auto-adding lists."
+        msg "No key provided: keep existing lists as-is."
     fi
-
-    uci commit podkop
-    msg "List setup step completed."
 }
 
 trim_string() {
@@ -480,16 +478,16 @@ is_supported_proxy_url() {
     esac
 }
 
-configure_tun_quickstart() {
+configure_proxy_quickstart() {
     local applied_url
 
     if ! command -v uci >/dev/null 2>&1; then
-        warn "uci not found, skip TUN quick setup."
+        warn "uci not found, skip proxy quick setup."
         return
     fi
 
     if ! uci -q show podkop.main >/dev/null 2>&1; then
-        warn "podkop.main section not found, skip TUN quick setup."
+        warn "podkop.main section not found, skip proxy quick setup."
         return
     fi
 
@@ -503,11 +501,12 @@ configure_tun_quickstart() {
 
     applied_url="$PODKOP_VLESS_URL"
 
-    # Force simplified TUN full-tunnel mode.
-    uci -q set podkop.settings.traffic_capture_mode='tun'
+    # Force stable proxy setup defaults.
+    uci -q delete podkop.settings.traffic_capture_mode || true
+    uci -q set podkop.settings.startup_wait_wan='1'
+    uci -q set podkop.settings.startup_wait_timeout='60'
     uci -q set podkop.settings.enable_section_failover='0'
     uci -q delete podkop.settings.failover_secondary_section || true
-    uci -q delete podkop.settings.routing_excluded_ips || true
 
     uci -q set podkop.main.connection_type='proxy'
     uci -q set podkop.main.proxy_config_type='url'
@@ -518,33 +517,14 @@ configure_tun_quickstart() {
     uci -q delete podkop.main.urltest_proxy_links || true
     uci -q delete podkop.main.outbound_json || true
 
-    # Remove list/whitelist-like routing complexity for quick start.
-    uci -q delete podkop.main.community_lists || true
-    uci -q delete podkop.main.user_domains_text || true
-    uci -q delete podkop.main.user_subnets_text || true
-    uci -q delete podkop.main.user_domains || true
-    uci -q delete podkop.main.user_subnets || true
-    uci -q delete podkop.main.local_domain_lists || true
-    uci -q delete podkop.main.local_subnet_lists || true
-    uci -q delete podkop.main.remote_domain_lists || true
-    uci -q delete podkop.main.remote_subnet_lists || true
-    uci -q delete podkop.main.fully_routed_ips || true
-
     uci commit podkop
     if [ -n "$applied_url" ]; then
-        msg "Applied quick TUN config with your proxy URL."
+        msg "Applied quick proxy config with your proxy URL."
     else
-        msg "Applied quick TUN config (URL can be added later in LuCI)."
+        msg "Applied quick proxy config (URL can be added later in LuCI)."
     fi
 
     /etc/init.d/podkop restart >/dev/null 2>&1 || /etc/init.d/podkop start >/dev/null 2>&1 || true
-    sleep 1
-
-    if ip link show podkop0 >/dev/null 2>&1; then
-        msg "TUN interface podkop0 is up."
-    else
-        warn "TUN interface podkop0 not found yet. Check logs: logread -e podkop"
-    fi
 }
 
 setup_mobile_import() {
@@ -633,7 +613,7 @@ main() {
     refresh_luci_cache
     reset_old_config_if_needed
     apply_custom_lists
-    configure_tun_quickstart
+    configure_proxy_quickstart
     setup_mobile_import
     print_finish
 }

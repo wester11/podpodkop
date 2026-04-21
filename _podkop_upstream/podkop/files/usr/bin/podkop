@@ -107,47 +107,8 @@ has_outbound_section() {
     return $section_exists
 }
 
-get_traffic_capture_mode() {
-    local mode
-    config_get mode "settings" "traffic_capture_mode" "tun"
-
-    # This fork currently supports TUN mode only.
-    if [ "$mode" != "tun" ]; then
-        log "Only 'tun' traffic capture mode is supported in this build. Forcing tun." "warn"
-        mode="tun"
-    fi
-
-    echo "$mode"
-}
-
-is_tun_capture_mode() {
-    [ "$(get_traffic_capture_mode)" = "tun" ]
-}
-
 get_traffic_inbound_tag() {
-    # Keep helper for readability and future extension.
-    echo "$SB_TUN_INBOUND_TAG"
-}
-
-get_wan_l3_device() {
-    local status_json l3_device device
-
-    status_json="$(ubus call network.interface.wan status 2> /dev/null || true)"
-    if [ -n "$status_json" ]; then
-        l3_device="$(echo "$status_json" | jq -r '.l3_device // empty' 2> /dev/null || true)"
-        if [ -n "$l3_device" ]; then
-            echo "$l3_device"
-            return 0
-        fi
-
-        device="$(echo "$status_json" | jq -r '.device // empty' 2> /dev/null || true)"
-        if [ -n "$device" ]; then
-            echo "$device"
-            return 0
-        fi
-    fi
-
-    ip -4 route show default 2> /dev/null | awk '/^default/ {print $5; exit}'
+    echo "$SB_TPROXY_INBOUND_TAG"
 }
 
 is_wan_ready() {
@@ -198,23 +159,6 @@ wait_for_wan_ready() {
 }
 
 setup_traffic_capture() {
-    if is_tun_capture_mode; then
-        log "Traffic capture mode: tun (nft/tproxy hooks are skipped)"
-        if nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
-            log "Removing stale nft table from previous tproxy run" "debug"
-            nft delete table inet "$NFT_TABLE_NAME"
-        fi
-        if ip rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
-            log "Removing stale tproxy fwmark rule" "debug"
-            ip -4 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-        fi
-        if ip route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
-            log "Flushing stale tproxy route table" "debug"
-            ip route flush table "$RT_TABLE_NAME"
-        fi
-        return 0
-    fi
-
     route_table_rule_mark
     create_nft_rules
 }
@@ -297,11 +241,19 @@ stop_main() {
 }
 
 start() {
+    local dont_touch_dhcp
+    config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
+
     if ! start_main; then
+        log "Podkop failed to start. Restoring safe network state." "error"
+        if [ "$dont_touch_dhcp" -eq 0 ]; then
+            dnsmasq_restore
+        fi
+        uci_set "podkop" "settings" "shutdown_correctly" 1
+        uci commit "podkop" && config_load "$PODKOP_CONFIG"
         return 1
     fi
 
-    config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
         dnsmasq_configure
     fi
@@ -337,7 +289,6 @@ restart() {
 
 # Migrations and validation funcs
 migration() {
-    migration_add_new_option "podkop" "settings" "traffic_capture_mode" "tun" || true
     migration_add_new_option "podkop" "settings" "startup_wait_wan" "1" || true
     migration_add_new_option "podkop" "settings" "startup_wait_timeout" "60" || true
     migration_add_new_option "podkop" "settings" "enable_section_failover" "0" || true
@@ -842,13 +793,9 @@ list_update() {
 
     local update_status=0
 
-    if is_tun_capture_mode; then
-        echolog "ℹ️ TUN full-tunnel mode: list/whitelist imports are skipped"
-    else
-        config_foreach import_community_subnet_lists "section" || update_status=1
-        config_foreach import_domains_from_remote_domain_lists "section" || update_status=1
-        config_foreach import_subnets_from_remote_subnet_lists "section" || update_status=1
-    fi
+    config_foreach import_community_subnet_lists "section" || update_status=1
+    config_foreach import_domains_from_remote_domain_lists "section" || update_status=1
+    config_foreach import_subnets_from_remote_subnet_lists "section" || update_status=1
 
     update_subscriptions || update_status=1
 
@@ -915,24 +862,10 @@ sing_box_configure_log() {
 sing_box_configure_inbounds() {
     log "Configure the inbounds section of a sing-box JSON configuration"
 
-    if is_tun_capture_mode; then
-        config=$(
-            sing_box_cm_add_tun_inbound \
-                "$config" \
-                "$SB_TUN_INBOUND_TAG" \
-                "$SB_TUN_INBOUND_INTERFACE" \
-                "$SB_TUN_INBOUND_ADDRESS" \
-                "$SB_TUN_INBOUND_MTU" \
-                true \
-                true \
-                "$SB_TUN_INBOUND_STACK"
-        )
-    else
-        config=$(
-            sing_box_cm_add_tproxy_inbound \
-                "$config" "$SB_TPROXY_INBOUND_TAG" "$SB_TPROXY_INBOUND_ADDRESS" "$SB_TPROXY_INBOUND_PORT" true true
-        )
-    fi
+    config=$(
+        sing_box_cm_add_tproxy_inbound \
+            "$config" "$SB_TPROXY_INBOUND_TAG" "$SB_TPROXY_INBOUND_ADDRESS" "$SB_TPROXY_INBOUND_PORT" true true
+    )
 
     config=$(
         sing_box_cm_add_direct_inbound "$config" "$SB_DNS_INBOUND_TAG" "$SB_DNS_INBOUND_ADDRESS" "$SB_DNS_INBOUND_PORT"
@@ -1298,31 +1231,17 @@ sing_box_configure_dns() {
 sing_box_configure_route() {
     log "Configure the route section of a sing-box JSON configuration"
 
-    local output_network_interface traffic_inbound_tag first_outbound_section first_outbound_tag final_outbound_tag \
-        wan_l3_device
+    local output_network_interface traffic_inbound_tag first_outbound_section first_outbound_tag
     traffic_inbound_tag="$(get_traffic_inbound_tag)"
     first_outbound_section="$(get_first_outbound_section)"
     first_outbound_tag="$(get_effective_outbound_tag_for_section "$first_outbound_section")"
 
-    if is_tun_capture_mode; then
-        final_outbound_tag="$first_outbound_tag"
-    else
-        final_outbound_tag="$SB_DIRECT_OUTBOUND_TAG"
-    fi
-
     config_get output_network_interface "settings" "output_network_interface"
-    if is_tun_capture_mode && [ -z "$output_network_interface" ]; then
-        wan_l3_device="$(get_wan_l3_device)"
-        if [ -n "$wan_l3_device" ]; then
-            output_network_interface="$wan_l3_device"
-            log "Using WAN interface '$wan_l3_device' as default route interface for TUN mode"
-        fi
-    fi
 
     if [ -z "$output_network_interface" ]; then
-        config=$(sing_box_cm_configure_route "$config" "$final_outbound_tag" true "$SB_DNS_SERVER_TAG")
+        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" true "$SB_DNS_SERVER_TAG")
     else
-        config=$(sing_box_cm_configure_route "$config" "$final_outbound_tag" false "$SB_DNS_SERVER_TAG" \
+        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" false "$SB_DNS_SERVER_TAG" \
             "$output_network_interface")
     fi
 
@@ -1340,26 +1259,6 @@ sing_box_configure_route() {
 
     config=$(sing_box_cf_proxy_domain "$config" "$traffic_inbound_tag" "$CHECK_PROXY_IP_DOMAIN" "$first_outbound_tag")
     config=$(sing_box_cf_override_domain_port "$config" "$FAKEIP_TEST_DOMAIN" 8443)
-
-    if is_tun_capture_mode; then
-        local private_rule_tag dhcp_rule_tag ntp_rule_tag
-
-        dhcp_rule_tag="$(gen_id)"
-        config=$(sing_box_cm_add_route_rule "$config" "$dhcp_rule_tag" "$traffic_inbound_tag" "$SB_DIRECT_OUTBOUND_TAG")
-        config=$(sing_box_cm_patch_route_rule "$config" "$dhcp_rule_tag" "network" "udp")
-        config=$(sing_box_cm_patch_route_rule "$config" "$dhcp_rule_tag" "port" "[67,68]")
-
-        ntp_rule_tag="$(gen_id)"
-        config=$(sing_box_cm_add_route_rule "$config" "$ntp_rule_tag" "$traffic_inbound_tag" "$SB_DIRECT_OUTBOUND_TAG")
-        config=$(sing_box_cm_patch_route_rule "$config" "$ntp_rule_tag" "network" "udp")
-        config=$(sing_box_cm_patch_route_rule "$config" "$ntp_rule_tag" "port" "[123]")
-
-        private_rule_tag="$(gen_id)"
-        config=$(sing_box_cm_add_route_rule "$config" "$private_rule_tag" "$traffic_inbound_tag" "$SB_DIRECT_OUTBOUND_TAG")
-        config=$(sing_box_cm_patch_route_rule "$config" "$private_rule_tag" "ip_is_private" true)
-        log "TUN full-tunnel mode is enabled: list/whitelist routing rules are skipped, DHCP/NTP/private traffic is kept direct."
-        return 0
-    fi
 
     configure_common_reject_route_rule
     configure_common_direct_route_rule

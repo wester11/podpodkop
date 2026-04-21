@@ -326,8 +326,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  const trafficCaptureMode = uci.get("podkop", "settings", "traffic_capture_mode") || "tun";
-  if (trafficCaptureMode !== "tun") {
+  if (true) {
     o = section.option(
       form.DynamicList,
       "community_lists",
