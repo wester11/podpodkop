@@ -129,6 +129,74 @@ get_traffic_inbound_tag() {
     echo "$SB_TUN_INBOUND_TAG"
 }
 
+get_wan_l3_device() {
+    local status_json l3_device device
+
+    status_json="$(ubus call network.interface.wan status 2> /dev/null || true)"
+    if [ -n "$status_json" ]; then
+        l3_device="$(echo "$status_json" | jq -r '.l3_device // empty' 2> /dev/null || true)"
+        if [ -n "$l3_device" ]; then
+            echo "$l3_device"
+            return 0
+        fi
+
+        device="$(echo "$status_json" | jq -r '.device // empty' 2> /dev/null || true)"
+        if [ -n "$device" ]; then
+            echo "$device"
+            return 0
+        fi
+    fi
+
+    ip -4 route show default 2> /dev/null | awk '/^default/ {print $5; exit}'
+}
+
+is_wan_ready() {
+    local status_json up l3_device
+
+    status_json="$(ubus call network.interface.wan status 2> /dev/null || true)"
+    if [ -n "$status_json" ]; then
+        up="$(echo "$status_json" | jq -r '.up // false' 2> /dev/null || true)"
+        l3_device="$(echo "$status_json" | jq -r '.l3_device // empty' 2> /dev/null || true)"
+        if [ "$up" = "true" ] && [ -n "$l3_device" ]; then
+            return 0
+        fi
+    fi
+
+    ip -4 route show default 2> /dev/null | grep -q '^default '
+}
+
+wait_for_wan_ready() {
+    local wait_enabled wait_timeout i
+
+    config_get_bool wait_enabled "settings" "startup_wait_wan" 1
+    config_get wait_timeout "settings" "startup_wait_timeout" "60"
+    wait_timeout="$(normalize_positive_int "$wait_timeout" 60)"
+
+    if [ "$wait_enabled" -ne 1 ]; then
+        log "WAN readiness wait is disabled by configuration"
+        return 0
+    fi
+
+    if is_wan_ready; then
+        log "WAN is already ready"
+        return 0
+    fi
+
+    log "Waiting for WAN readiness (timeout: ${wait_timeout}s)..."
+    i=0
+    while [ "$i" -lt "$wait_timeout" ]; do
+        if is_wan_ready; then
+            log "WAN became ready after ${i}s"
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+
+    log "WAN did not become ready within ${wait_timeout}s" "error"
+    return 1
+}
+
 setup_traffic_capture() {
     if is_tun_capture_mode; then
         log "Traffic capture mode: tun (nft/tproxy hooks are skipped)"
@@ -161,6 +229,11 @@ start_main() {
     config_foreach process_validate_service "section"
 
     br_netfilter_disable
+
+    if ! wait_for_wan_ready; then
+        log "Aborting podkop start because WAN is not ready. This prevents broken provider sessions." "error"
+        return 1
+    fi
 
     # Sync time for DoH/DoT
     /usr/sbin/ntpd -q -p 194.190.168.1 -p 216.239.35.0 -p 216.239.35.4 -p 162.159.200.1 -p 162.159.200.123
@@ -224,7 +297,9 @@ stop_main() {
 }
 
 start() {
-    start_main
+    if ! start_main; then
+        return 1
+    fi
 
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
@@ -263,6 +338,8 @@ restart() {
 # Migrations and validation funcs
 migration() {
     migration_add_new_option "podkop" "settings" "traffic_capture_mode" "tun" || true
+    migration_add_new_option "podkop" "settings" "startup_wait_wan" "1" || true
+    migration_add_new_option "podkop" "settings" "startup_wait_timeout" "60" || true
     migration_add_new_option "podkop" "settings" "enable_section_failover" "0" || true
     migration_add_new_option "podkop" "settings" "failover_primary_section" "main" || true
     migration_add_new_option "podkop" "settings" "failover_check_url" "https://www.google.com/generate_204" || true
@@ -1221,7 +1298,8 @@ sing_box_configure_dns() {
 sing_box_configure_route() {
     log "Configure the route section of a sing-box JSON configuration"
 
-    local output_network_interface traffic_inbound_tag first_outbound_section first_outbound_tag final_outbound_tag
+    local output_network_interface traffic_inbound_tag first_outbound_section first_outbound_tag final_outbound_tag \
+        wan_l3_device
     traffic_inbound_tag="$(get_traffic_inbound_tag)"
     first_outbound_section="$(get_first_outbound_section)"
     first_outbound_tag="$(get_effective_outbound_tag_for_section "$first_outbound_section")"
@@ -1233,6 +1311,14 @@ sing_box_configure_route() {
     fi
 
     config_get output_network_interface "settings" "output_network_interface"
+    if is_tun_capture_mode && [ -z "$output_network_interface" ]; then
+        wan_l3_device="$(get_wan_l3_device)"
+        if [ -n "$wan_l3_device" ]; then
+            output_network_interface="$wan_l3_device"
+            log "Using WAN interface '$wan_l3_device' as default route interface for TUN mode"
+        fi
+    fi
+
     if [ -z "$output_network_interface" ]; then
         config=$(sing_box_cm_configure_route "$config" "$final_outbound_tag" true "$SB_DNS_SERVER_TAG")
     else
@@ -1256,11 +1342,22 @@ sing_box_configure_route() {
     config=$(sing_box_cf_override_domain_port "$config" "$FAKEIP_TEST_DOMAIN" 8443)
 
     if is_tun_capture_mode; then
-        local private_rule_tag
+        local private_rule_tag dhcp_rule_tag ntp_rule_tag
+
+        dhcp_rule_tag="$(gen_id)"
+        config=$(sing_box_cm_add_route_rule "$config" "$dhcp_rule_tag" "$traffic_inbound_tag" "$SB_DIRECT_OUTBOUND_TAG")
+        config=$(sing_box_cm_patch_route_rule "$config" "$dhcp_rule_tag" "network" "udp")
+        config=$(sing_box_cm_patch_route_rule "$config" "$dhcp_rule_tag" "port" "[67,68]")
+
+        ntp_rule_tag="$(gen_id)"
+        config=$(sing_box_cm_add_route_rule "$config" "$ntp_rule_tag" "$traffic_inbound_tag" "$SB_DIRECT_OUTBOUND_TAG")
+        config=$(sing_box_cm_patch_route_rule "$config" "$ntp_rule_tag" "network" "udp")
+        config=$(sing_box_cm_patch_route_rule "$config" "$ntp_rule_tag" "port" "[123]")
+
         private_rule_tag="$(gen_id)"
         config=$(sing_box_cm_add_route_rule "$config" "$private_rule_tag" "$traffic_inbound_tag" "$SB_DIRECT_OUTBOUND_TAG")
         config=$(sing_box_cm_patch_route_rule "$config" "$private_rule_tag" "ip_is_private" true)
-        log "TUN full-tunnel mode is enabled: list/whitelist routing rules are skipped."
+        log "TUN full-tunnel mode is enabled: list/whitelist routing rules are skipped, DHCP/NTP/private traffic is kept direct."
         return 0
     fi
 

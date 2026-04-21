@@ -284,6 +284,35 @@ function createSettingsContent(section) {
 
   o = section.option(
     form.Flag,
+    "startup_wait_wan",
+    _("Wait For WAN On Start"),
+    _("Wait until WAN is ready before starting Podkop to avoid session/authentication issues with providers"),
+  );
+  o.default = "1";
+  o.rmempty = false;
+
+  o = section.option(
+    form.Value,
+    "startup_wait_timeout",
+    _("WAN Wait Timeout (sec)"),
+    _("Maximum wait time for WAN readiness on startup"),
+  );
+  o.default = "60";
+  o.rmempty = false;
+  o.depends("startup_wait_wan", "1");
+  o.validate = function (section_id, value) {
+    if (!value) {
+      return _("Timeout cannot be empty");
+    }
+    const parsed = parseInt(value);
+    if (isNaN(parsed) || parsed < 5 || parsed > 600) {
+      return _("Timeout must be a number in range 5-600");
+    }
+    return true;
+  };
+
+  o = section.option(
+    form.Flag,
     "download_lists_via_proxy",
     _("Download Lists via Proxy/VPN"),
     _("Downloading all lists via specific Proxy/VPN"),

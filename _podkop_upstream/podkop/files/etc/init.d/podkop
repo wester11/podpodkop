@@ -42,6 +42,8 @@ service_triggers() {
 
     procd_open_trigger
     procd_add_config_trigger "config.change" "$NAME" "$initscript" restart 'on_config_change'
+    procd_add_interface_trigger "interface.*.up" "wan" /etc/init.d/podkop restart
+    procd_add_interface_trigger "interface.*.up" "wan6" /etc/init.d/podkop restart
 
     if [ "$enable_badwan_interface_monitoring" = "1" ]; then
         for iface in $badwan_monitored_interfaces; do
