@@ -22,11 +22,13 @@ PODKOP_BIN_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podko
 PODKOP_INIT_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/etc/init.d/podkop"
 PODKOP_CONSTANTS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/usr/lib/constants.sh"
 PODKOP_SINGBOX_MGR_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/usr/lib/sing_box_config_manager.sh"
+PODKOP_LIB_BASE_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/usr/lib"
 PODKOP_SECTION_JS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/section.js"
 PODKOP_SETTINGS_JS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js"
 PODKOP_SUBSCRIBE_JS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/subscribe.js"
 PODKOP_SUBSCRIBE_CGI_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-subscribe"
 PODKOP_IMPORT_CGI_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-import-subscription"
+LUCI_PODKOP_BASE_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop"
 
 PODKOP_RELEASE_TAG="${PODKOP_RELEASE_TAG:-}"
 DOWNLOAD_DIR="/tmp/podkop-fork"
@@ -41,6 +43,7 @@ command -v apk >/dev/null 2>&1 && PKG_IS_APK=1
 REPO_API=""
 REPO_RELEASE_PAGE=""
 USE_FEED_INSTALL=0
+USE_RAW_BOOTSTRAP=0
 
 msg() {
     printf "\033[32;1m%s\033[0m\n" "$1"
@@ -203,6 +206,51 @@ pkg_install_name() {
         apk add "$pkg_name"
     else
         opkg install "$pkg_name"
+    fi
+}
+
+pkg_is_available() {
+    pkg_name="$1"
+    if [ "$PKG_IS_APK" -eq 1 ]; then
+        apk search -e "$pkg_name" >/dev/null 2>&1
+    else
+        opkg list "$pkg_name" 2>/dev/null | grep -q "^$pkg_name - "
+    fi
+}
+
+pkg_is_installed_exact() {
+    pkg_name="$1"
+    if [ "$PKG_IS_APK" -eq 1 ]; then
+        apk list --installed 2>/dev/null | grep -q "^$pkg_name-"
+    else
+        opkg list-installed 2>/dev/null | grep -q "^$pkg_name - "
+    fi
+}
+
+install_raw_file() {
+    src_url="$1"
+    dst_file="$2"
+    mode="$3"
+    required="$4"
+
+    mkdir -p "$(dirname "$dst_file")"
+    if fetch_file "$src_url" "$dst_file"; then
+        chmod "$mode" "$dst_file" || true
+        return 0
+    fi
+
+    if [ "$required" = "1" ]; then
+        err "Failed to download required file: $src_url"
+        return 1
+    fi
+
+    warn "Failed to download optional file: $src_url"
+    return 0
+}
+
+normalize_compiled_version() {
+    if [ -f /usr/lib/podkop/constants.sh ]; then
+        sed -i "s/__COMPILED_VERSION_VARIABLE__/0.fork/g" /usr/lib/podkop/constants.sh || true
     fi
 }
 
@@ -392,18 +440,96 @@ download_release_packages() {
 }
 
 install_packages_from_feeds() {
-    msg "Installing podkop from OpenWrt feeds..."
-    pkg_remove podkop || true
-    pkg_remove luci-app-podkop || true
-    pkg_install_name podkop
-    pkg_install_name luci-app-podkop
-    pkg_remove luci-i18n-podkop-ru || true
-    pkg_install_name luci-i18n-podkop-ru || true
+    local missing_feed_pkg
+    missing_feed_pkg=0
+    msg "Installing podkop from OpenWrt feeds (safe mode)..."
+
+    for pkg in podkop luci-app-podkop; do
+        if pkg_is_available "$pkg"; then
+            msg "Installing $pkg from feed..."
+            pkg_install_name "$pkg" || {
+                err "Failed to install $pkg from feed."
+                exit 1
+            }
+        elif pkg_is_installed_exact "$pkg"; then
+            warn "$pkg is not available in current feed, keeping installed version."
+        else
+            warn "$pkg is not available in current feed and is not installed."
+            missing_feed_pkg=1
+        fi
+    done
+
+    if pkg_is_available luci-i18n-podkop-ru; then
+        pkg_install_name luci-i18n-podkop-ru || true
+    fi
+
+    if [ "$missing_feed_pkg" -eq 1 ]; then
+        warn "Switching to RAW bootstrap mode for missing podkop files."
+        USE_RAW_BOOTSTRAP=1
+    fi
+}
+
+install_runtime_dependencies() {
+    local dep
+    for dep in sing-box curl jq kmod-nft-tproxy coreutils-base64 bind-dig; do
+        if pkg_is_installed_exact "$dep"; then
+            continue
+        fi
+        if ! pkg_is_available "$dep"; then
+            err "Required dependency is unavailable in feed: $dep"
+            exit 1
+        fi
+        msg "Installing dependency: $dep"
+        pkg_install_name "$dep" || {
+            err "Failed to install dependency: $dep"
+            exit 1
+        }
+    done
+}
+
+bootstrap_podkop_from_raw() {
+    local lib_name
+    msg "Bootstrapping podkop from raw files..."
+    install_runtime_dependencies
+
+    install_raw_file "$PODKOP_BIN_URL" "/usr/bin/podkop" "0755" "1"
+    install_raw_file "$PODKOP_INIT_URL" "/etc/init.d/podkop" "0755" "1"
+    if [ ! -f /etc/config/podkop ]; then
+        install_raw_file "$PODKOP_CONFIG_URL" "/etc/config/podkop" "0600" "1"
+    fi
+
+    mkdir -p /usr/lib/podkop
+    for lib_name in constants.sh helpers.jq helpers.sh logging.sh nft.sh rulesets.sh sing_box_config_facade.sh sing_box_config_manager.sh; do
+        install_raw_file "${PODKOP_LIB_BASE_URL}/${lib_name}" "/usr/lib/podkop/${lib_name}" "0644" "1"
+    done
+    normalize_compiled_version
+}
+
+bootstrap_luci_from_raw() {
+    local view_name
+    msg "Bootstrapping LuCI podkop files from raw..."
+
+    install_raw_file "${LUCI_PODKOP_BASE_URL}/root/usr/share/luci/menu.d/luci-app-podkop.json" "/usr/share/luci/menu.d/luci-app-podkop.json" "0644" "1"
+    install_raw_file "${LUCI_PODKOP_BASE_URL}/root/usr/share/rpcd/acl.d/luci-app-podkop.json" "/usr/share/rpcd/acl.d/luci-app-podkop.json" "0644" "1"
+    install_raw_file "${LUCI_PODKOP_BASE_URL}/root/www/cgi-bin/podkop-subscribe" "/www/cgi-bin/podkop-subscribe" "0755" "1"
+    install_raw_file "${LUCI_PODKOP_BASE_URL}/root/www/cgi-bin/podkop-import-subscription" "/www/cgi-bin/podkop-import-subscription" "0755" "1"
+
+    for view_name in dashboard.js diagnostic.js main.js podkop.js section.js settings.js subscribe.js; do
+        install_raw_file "${LUCI_PODKOP_BASE_URL}/htdocs/luci-static/resources/view/podkop/${view_name}" "/www/luci-static/resources/view/podkop/${view_name}" "0644" "1"
+    done
+}
+
+bootstrap_from_raw_if_needed() {
+    if [ "$USE_RAW_BOOTSTRAP" -eq 1 ]; then
+        bootstrap_podkop_from_raw
+        bootstrap_luci_from_raw
+    fi
 }
 
 install_packages() {
     if [ "$USE_FEED_INSTALL" -eq 1 ]; then
         install_packages_from_feeds
+        bootstrap_from_raw_if_needed
         return
     fi
 
@@ -529,6 +655,7 @@ apply_custom_lists() {
 }
 
 apply_core_runtime_patch() {
+    mkdir -p /usr/lib/podkop
     msg "Applying fork runtime patch..."
 
     if fetch_file "$PODKOP_BIN_URL" "/usr/bin/podkop"; then
@@ -543,16 +670,17 @@ apply_core_runtime_patch() {
         warn "Failed to download /etc/init.d/podkop override"
     fi
 
-    if fetch_file "$PODKOP_CONSTANTS_URL" "/usr/lib/constants.sh"; then
-        chmod 0644 /usr/lib/constants.sh || true
+    if fetch_file "$PODKOP_CONSTANTS_URL" "/usr/lib/podkop/constants.sh"; then
+        chmod 0644 /usr/lib/podkop/constants.sh || true
+        normalize_compiled_version
     else
-        warn "Failed to download /usr/lib/constants.sh override"
+        warn "Failed to download /usr/lib/podkop/constants.sh override"
     fi
 
-    if fetch_file "$PODKOP_SINGBOX_MGR_URL" "/usr/lib/sing_box_config_manager.sh"; then
-        chmod 0644 /usr/lib/sing_box_config_manager.sh || true
+    if fetch_file "$PODKOP_SINGBOX_MGR_URL" "/usr/lib/podkop/sing_box_config_manager.sh"; then
+        chmod 0644 /usr/lib/podkop/sing_box_config_manager.sh || true
     else
-        warn "Failed to download /usr/lib/sing_box_config_manager.sh override"
+        warn "Failed to download /usr/lib/podkop/sing_box_config_manager.sh override"
     fi
 }
 
