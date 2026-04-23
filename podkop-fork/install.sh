@@ -34,6 +34,7 @@ PODKOP_VLESS_URL="${PODKOP_VLESS_URL:-}"
 PKG_IS_APK=0
 command -v apk >/dev/null 2>&1 && PKG_IS_APK=1
 REPO_API=""
+REPO_RELEASE_PAGE=""
 
 msg() {
     printf "\033[32;1m%s\033[0m\n" "$1"
@@ -289,36 +290,59 @@ prepare_ntp() {
 }
 
 download_release_packages() {
-    local release_json grep_url_pattern url filename filepath attempt
+    local release_json release_html grep_url_pattern rel_url_pattern abs_url_pattern pkg_ext url filename filepath attempt
+    local api_rate_limited api_not_found
+    api_rate_limited=0
+    api_not_found=0
 
     rm -rf "$DOWNLOAD_DIR"
     mkdir -p "$DOWNLOAD_DIR"
 
-    release_json="$(fetch_text "$REPO_API" 2>/dev/null || true)"
-    if [ -z "$release_json" ]; then
-        err "Failed to fetch release metadata from GitHub API."
-        exit 1
-    fi
-
-    if echo "$release_json" | grep -q "API rate limit"; then
-        err "GitHub API rate limit reached. Retry in a few minutes."
-        exit 1
-    fi
-
-    if echo "$release_json" | grep -q '"Not Found"'; then
-        err "Requested release was not found: ${PODKOP_RELEASE_TAG:-latest}"
-        exit 1
-    fi
-
     if [ "$PKG_IS_APK" -eq 1 ]; then
-        grep_url_pattern='https://[^"[:space:]]*\.apk'
+        pkg_ext='apk'
     else
-        grep_url_pattern='https://[^"[:space:]]*\.ipk'
+        pkg_ext='ipk'
+    fi
+    grep_url_pattern="https://[^\"[:space:]]*\\.${pkg_ext}"
+    rel_url_pattern="/${PODKOP_FORK_REPO}/releases/download/[^\"[:space:]]*\\.${pkg_ext}"
+    abs_url_pattern="https://github.com/${PODKOP_FORK_REPO}/releases/download/[^\"[:space:]]*\\.${pkg_ext}"
+
+    : > "$DOWNLOAD_DIR/.release_urls"
+
+    release_json="$(fetch_text "$REPO_API" 2>/dev/null || true)"
+    if [ -n "$release_json" ]; then
+        if echo "$release_json" | grep -q "API rate limit"; then
+            api_rate_limited=1
+        fi
+        if echo "$release_json" | grep -q '"Not Found"'; then
+            api_not_found=1
+        fi
+        echo "$release_json" | grep -o "$grep_url_pattern" | sed 's/[?#].*$//' | sort -u > "$DOWNLOAD_DIR/.release_urls" || true
     fi
 
-    echo "$release_json" | grep -o "$grep_url_pattern" | sort -u > "$DOWNLOAD_DIR/.release_urls"
     if [ ! -s "$DOWNLOAD_DIR/.release_urls" ]; then
-        err "No package URLs found in release metadata."
+        if [ "$api_rate_limited" -eq 1 ]; then
+            warn "GitHub API rate limit reached. Falling back to release page parsing..."
+        else
+            warn "GitHub API unavailable. Falling back to release page parsing..."
+        fi
+
+        release_html="$(fetch_text "$REPO_RELEASE_PAGE" 2>/dev/null || true)"
+        if [ -n "$release_html" ]; then
+            {
+                echo "$release_html" | grep -Eo "$abs_url_pattern" || true
+                echo "$release_html" | grep -Eo "$rel_url_pattern" | sed 's#^#https://github.com#' || true
+            } | sed 's/&amp;/\&/g' | sed 's/[?#].*$//' | sort -u > "$DOWNLOAD_DIR/.release_urls"
+        fi
+    fi
+
+    if [ ! -s "$DOWNLOAD_DIR/.release_urls" ]; then
+        if [ "$api_not_found" -eq 1 ]; then
+            err "Requested release was not found: ${PODKOP_RELEASE_TAG:-latest}"
+        else
+            err "Failed to fetch release metadata from GitHub API and release page."
+            err "Check access to api.github.com and github.com, then retry."
+        fi
         exit 1
     fi
 
@@ -597,9 +621,11 @@ main() {
 
     if [ -n "$PODKOP_RELEASE_TAG" ]; then
         REPO_API="https://api.github.com/repos/${PODKOP_FORK_REPO}/releases/tags/${PODKOP_RELEASE_TAG}"
+        REPO_RELEASE_PAGE="https://github.com/${PODKOP_FORK_REPO}/releases/tag/${PODKOP_RELEASE_TAG}"
         msg "Using pinned release: ${PODKOP_RELEASE_TAG}"
     else
         REPO_API="https://api.github.com/repos/${PODKOP_FORK_REPO}/releases/latest"
+        REPO_RELEASE_PAGE="https://github.com/${PODKOP_FORK_REPO}/releases/latest"
     fi
     trap cleanup EXIT INT TERM
 
