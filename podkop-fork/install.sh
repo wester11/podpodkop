@@ -18,7 +18,12 @@ LISTS_BASE_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/lists"
 SERVICES_BASE_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/services"
 # Podkop custom config source (from custom podkop fork sources in this repository):
 PODKOP_CONFIG_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/etc/config/podkop"
+PODKOP_BIN_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/usr/bin/podkop"
+PODKOP_INIT_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/etc/init.d/podkop"
+PODKOP_CONSTANTS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/usr/lib/constants.sh"
+PODKOP_SINGBOX_MGR_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/podkop/files/usr/lib/sing_box_config_manager.sh"
 PODKOP_SECTION_JS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/section.js"
+PODKOP_SETTINGS_JS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js"
 PODKOP_SUBSCRIBE_JS_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/htdocs/luci-static/resources/view/podkop/subscribe.js"
 PODKOP_SUBSCRIBE_CGI_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-subscribe"
 PODKOP_IMPORT_CGI_URL="https://raw.githubusercontent.com/wester11/podpodkop/main/_podkop_upstream/luci-app-podkop/root/www/cgi-bin/podkop-import-subscription"
@@ -35,6 +40,7 @@ PKG_IS_APK=0
 command -v apk >/dev/null 2>&1 && PKG_IS_APK=1
 REPO_API=""
 REPO_RELEASE_PAGE=""
+USE_FEED_INSTALL=0
 
 msg() {
     printf "\033[32;1m%s\033[0m\n" "$1"
@@ -191,6 +197,15 @@ pkg_install() {
     fi
 }
 
+pkg_install_name() {
+    pkg_name="$1"
+    if [ "$PKG_IS_APK" -eq 1 ]; then
+        apk add "$pkg_name"
+    else
+        opkg install "$pkg_name"
+    fi
+}
+
 update_config() {
     warn "Detected old podkop version."
     warn "If you continue, podkop config may be reset."
@@ -340,8 +355,10 @@ download_release_packages() {
         if [ "$api_not_found" -eq 1 ]; then
             err "Requested release was not found: ${PODKOP_RELEASE_TAG:-latest}"
         else
-            err "Failed to fetch release metadata from GitHub API and release page."
-            err "Check access to api.github.com and github.com, then retry."
+            warn "Failed to fetch release metadata from GitHub API and release page."
+            warn "Will install podkop packages from OpenWrt feeds."
+            USE_FEED_INSTALL=1
+            return 0
         fi
         exit 1
     fi
@@ -367,12 +384,29 @@ download_release_packages() {
     done < "$DOWNLOAD_DIR/.release_urls"
 
     if ! find "$DOWNLOAD_DIR" -maxdepth 1 -type f -name '*podkop*' | grep -q .; then
-        err "No podkop packages downloaded."
-        exit 1
+        warn "No podkop packages downloaded from release assets."
+        warn "Will install podkop packages from OpenWrt feeds."
+        USE_FEED_INSTALL=1
+        return 0
     fi
 }
 
+install_packages_from_feeds() {
+    msg "Installing podkop from OpenWrt feeds..."
+    pkg_remove podkop || true
+    pkg_remove luci-app-podkop || true
+    pkg_install_name podkop
+    pkg_install_name luci-app-podkop
+    pkg_remove luci-i18n-podkop-ru || true
+    pkg_install_name luci-i18n-podkop-ru || true
+}
+
 install_packages() {
+    if [ "$USE_FEED_INSTALL" -eq 1 ]; then
+        install_packages_from_feeds
+        return
+    fi
+
     for pkg in podkop luci-app-podkop; do
         file=""
         for f in "$DOWNLOAD_DIR"/"$pkg"*; do
@@ -416,9 +450,10 @@ refresh_luci_cache() {
 }
 
 apply_subscribe_ui_patch() {
-    local view_dir section_js subscribe_js cgi_dir cgi_file import_cgi_file
+    local view_dir section_js settings_js subscribe_js cgi_dir cgi_file import_cgi_file
     view_dir="/www/luci-static/resources/view/podkop"
     section_js="$view_dir/section.js"
+    settings_js="$view_dir/settings.js"
     subscribe_js="$view_dir/subscribe.js"
     cgi_dir="/www/cgi-bin"
     cgi_file="$cgi_dir/podkop-subscribe"
@@ -438,6 +473,12 @@ apply_subscribe_ui_patch() {
         chmod 0644 "$section_js" || true
     else
         warn "Failed to download patched section.js"
+    fi
+
+    if fetch_file "$PODKOP_SETTINGS_JS_URL" "$settings_js"; then
+        chmod 0644 "$settings_js" || true
+    else
+        warn "Failed to download patched settings.js"
     fi
 
     if fetch_file "$PODKOP_SUBSCRIBE_CGI_URL" "$cgi_file"; then
@@ -484,6 +525,34 @@ apply_custom_lists() {
         msg "List setup step completed."
     else
         msg "No key provided: keep existing lists as-is."
+    fi
+}
+
+apply_core_runtime_patch() {
+    msg "Applying fork runtime patch..."
+
+    if fetch_file "$PODKOP_BIN_URL" "/usr/bin/podkop"; then
+        chmod 0755 /usr/bin/podkop || true
+    else
+        warn "Failed to download /usr/bin/podkop override"
+    fi
+
+    if fetch_file "$PODKOP_INIT_URL" "/etc/init.d/podkop"; then
+        chmod 0755 /etc/init.d/podkop || true
+    else
+        warn "Failed to download /etc/init.d/podkop override"
+    fi
+
+    if fetch_file "$PODKOP_CONSTANTS_URL" "/usr/lib/constants.sh"; then
+        chmod 0644 /usr/lib/constants.sh || true
+    else
+        warn "Failed to download /usr/lib/constants.sh override"
+    fi
+
+    if fetch_file "$PODKOP_SINGBOX_MGR_URL" "/usr/lib/sing_box_config_manager.sh"; then
+        chmod 0644 /usr/lib/sing_box_config_manager.sh || true
+    else
+        warn "Failed to download /usr/lib/sing_box_config_manager.sh override"
     fi
 }
 
@@ -635,6 +704,7 @@ main() {
     pkg_list_update || { err "Package list update failed"; exit 1; }
     download_release_packages
     install_packages
+    apply_core_runtime_patch
     apply_subscribe_ui_patch
     refresh_luci_cache
     reset_old_config_if_needed
